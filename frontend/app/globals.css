@@ -1,0 +1,182 @@
+@import "tailwindcss";
+
+@theme {
+  --color-forte-primary: #951B4C;
+  --color-forte-primary-dark: #7A1640;
+  --color-forte-primary-light: #B82363;
+  --color-forte-accent: #C72B6B;
+  --color-graphite-900: #1A1A2E;
+  --color-graphite-800: #232340;
+  --color-graphite-700: #2D2D50;
+  --color-graphite-600: #3A3A5C;
+  --color-graphite-500: #4A4A6A;
+  --color-graphite-400: #6B6B8D;
+  --color-graphite-300: #9090AB;
+  --color-graphite-200: #C0C0D0;
+  --color-graphite-100: #E8E8F0;
+  --color-graphite-50: #F5F5FA;
+  --color-success: #10B981;
+  --color-success-light: #D1FAE5;
+  --color-danger: #EF4444;
+  --color-danger-light: #FEE2E2;
+  --color-warning: #F59E0B;
+  --font-sans: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
+}
+
+/* ─── Global ──────────────────────────────────────────────────────────── */
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: var(--color-graphite-50);
+  color: var(--color-graphite-900);
+  min-height: 100vh;
+}
+
+/* ─── Custom scrollbar ────────────────────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-graphite-300);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-graphite-400);
+}
+
+/* ─── Animations ──────────────────────────────────────────────────────── */
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes pulse-ring {
+  0% {
+    transform: scale(0.8);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(2);
+    opacity: 0;
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+@keyframes spin-slow {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.animate-fade-in-up {
+  animation: fadeInUp 0.5s ease-out both;
+}
+
+.animate-shimmer {
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.4), transparent);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+}
+
+.animate-spin-slow {
+  animation: spin-slow 2s linear infinite;
+}
+
+/* ─── Glass card ──────────────────────────────────────────────────────── */
+.glass-card {
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.06);
+}
+
+.glass-card-dark {
+  background: rgba(26, 26, 46, 0.9);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.3);
+}
+
+/* ─── Drop zone ───────────────────────────────────────────────────────── */
+.dropzone {
+  border: 2px dashed var(--color-graphite-300);
+  transition: all 0.3s ease;
+}
+
+.dropzone:hover,
+.dropzone-active {
+  border-color: var(--color-forte-primary);
+  background: rgba(149, 27, 76, 0.04);
+}
+
+/* ─── Button base ─────────────────────────────────────────────────────── */
+.btn-forte {
+  background: linear-gradient(135deg, var(--color-forte-primary), var(--color-forte-accent));
+  color: white;
+  font-weight: 600;
+  padding: 0.75rem 1.5rem;
+  border-radius: 0.75rem;
+  transition: all 0.3s ease;
+  box-shadow: 0 4px 12px rgba(149, 27, 76, 0.3);
+  cursor: pointer;
+  border: none;
+}
+
+.btn-forte:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 20px rgba(149, 27, 76, 0.4);
+}
+
+.btn-forte:active {
+  transform: translateY(0);
+}
+
+.btn-forte:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+/* ─── Normative ref highlight ─────────────────────────────────────────── */
+.norm-ref {
+  background: linear-gradient(135deg, rgba(149, 27, 76, 0.08), rgba(199, 43, 107, 0.08));
+  border-left: 3px solid var(--color-forte-primary);
+  padding: 2px 6px;
+  border-radius: 0 4px 4px 0;
+  font-size: 0.85em;
+  color: var(--color-forte-primary-dark);
+}

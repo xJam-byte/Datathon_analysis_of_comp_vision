@@ -1,0 +1,55 @@
+### LLaMA-Factory LoRA fine-tuning config for Qwen2.5-VL-7B-Instruct
+### Запуск: llamafactory-cli train ml/train_lora.yaml
+
+### ─── Модель ───────────────────────────────────────────────────────────
+model_name_or_path: Qwen/Qwen2.5-VL-7B-Instruct
+trust_remote_code: true
+
+### ─── Метод ───────────────────────────────────────────────────────────
+stage: sft
+do_train: true
+finetuning_type: lora
+lora_rank: 64
+lora_alpha: 128
+lora_dropout: 0.05
+lora_target: all     # Все linear-слои (Qwen2.5-VL поддерживает)
+
+### ─── Датасет ─────────────────────────────────────────────────────────
+dataset_dir: ./dataset_output
+dataset: sharegpt_train
+eval_dataset: sharegpt_val
+template: qwen2_vl
+cutoff_len: 4096
+preprocessing_num_workers: 4
+
+### ─── Обучение ────────────────────────────────────────────────────────
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 8
+learning_rate: 2.0e-5
+lr_scheduler_type: cosine
+warmup_ratio: 0.1
+num_train_epochs: 3
+weight_decay: 0.01
+max_grad_norm: 1.0
+
+### ─── Оптимизация памяти ─────────────────────────────────────────────
+bf16: true
+gradient_checkpointing: true
+flash_attn: fa2          # FlashAttention-2 (ускоряет и экономит память)
+deepspeed: ds_z2_config.json  # опционально, для многогпушных сетапов
+
+### ─── Логирование ─────────────────────────────────────────────────────
+logging_steps: 10
+eval_steps: 50
+save_steps: 100
+save_total_limit: 3
+report_to: tensorboard
+output_dir: ./lora_output
+
+### ─── Валидация ───────────────────────────────────────────────────────
+do_eval: true
+eval_strategy: steps
+per_device_eval_batch_size: 1
+
+### ─── Воспроизводимость ──────────────────────────────────────────────
+seed: 42

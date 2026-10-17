@@ -1,0 +1,83 @@
+# ═══════════════════════════════════════════════════════════════════════
+# CashGuard — Docker Compose Stack
+# ═══════════════════════════════════════════════════════════════════════
+# Сервисы:
+#   backend   — FastAPI API-сервер (порт 8080)
+#   frontend  — Next.js UI (порт 3000)
+#   vlm       — vLLM с Qwen2.5-VL-7B-Instruct (порт 8000)
+# ═══════════════════════════════════════════════════════════════════════
+
+services:
+
+  # ─── VLM-сервер (vLLM) ──────────────────────────────────────────────
+  vlm:
+    image: vllm/vllm-openai:latest
+    container_name: cashguard-vlm
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+    volumes:
+      - vlm-cache:/root/.cache/huggingface
+    command: >
+      --model Qwen/Qwen2.5-VL-7B-Instruct
+      --served-model-name Qwen2.5-VL-7B-Instruct
+      --max-model-len 4096
+      --gpu-memory-utilization 0.85
+      --trust-remote-code
+      --dtype bfloat16
+      --max-num-seqs 1
+      --enforce-eager
+    ports:
+      - "8000:8000"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+    restart: "no"
+
+  # ─── Backend API ────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: cashguard-backend
+    env_file:
+      - ./backend/.env.example
+    environment:
+      - VLM_BASE_URL=http://vlm:8000/v1
+      - CORS_ORIGINS=http://localhost:3000,http://frontend:3000
+    ports:
+      - "8080:8080"
+    volumes:
+      - uploads:/app/uploads
+    depends_on:
+      - vlm
+    restart: unless-stopped
+
+  # ─── Frontend UI ───────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: cashguard-frontend
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8080
+      - NEXT_PUBLIC_DEFAULT_API_KEY=fortebank-datathon-2026-secret
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  vlm-cache:
+  uploads:

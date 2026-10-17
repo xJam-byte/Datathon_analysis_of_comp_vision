@@ -1,0 +1,30 @@
+# ─── Зависимости ──────
+node_modules/
+.next/
+out/
+
+# ─── Среда ────────────
+.env
+.env.local
+.env.production.local
+
+# ─── Сборка ──────────
+*.tsbuildinfo
+next-env.d.ts
+
+# ─── Бэкенд ──────────
+__pycache__/
+*.pyc
+backend/uploads/
+
+# ─── ML ──────────────
+ml/dataset_output/
+ml/lora_output/
+ml/merged_model/
+ml/videos/*
+!ml/videos/.gitkeep
+
+# ─── Система ─────────
+.DS_Store
+Thumbs.db
+*.log
