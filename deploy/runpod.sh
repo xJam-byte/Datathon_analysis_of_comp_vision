@@ -5,6 +5,7 @@
 #   bash deploy/runpod.sh setup   # один раз: зависимости, Node, сборка фронта
 #   bash deploy/runpod.sh merge   # один раз: вмёржить LoRA (ml/lora → ml/merged_model)
 #   bash deploy/runpod.sh start   # поднять vLLM + бэкенд + фронт
+#   bash deploy/runpod.sh smoke video.mov  # прогнать видео через API как жюри
 #   bash deploy/runpod.sh stop
 #
 # Переменные:
@@ -27,7 +28,7 @@ fi
 
 setup() {
   pip install -q --upgrade pip
-  pip install -q vllm
+  pip install -q vllm peft
   pip install -q -r backend/requirements.txt
   if ! command -v node >/dev/null || [[ "$(node -v | cut -d. -f1 | tr -d v)" -lt 20 ]]; then
     curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs
@@ -38,14 +39,9 @@ setup() {
 }
 
 merge() {
-  [[ -f ml/lora/adapter_config.json ]] || { echo "✘ распакуй адаптер в ml/lora/ (adapter_config.json + adapter_model.safetensors)"; exit 1; }
-  # LLaMA-Factory в отдельном venv, чтобы не конфликтовать с vLLM по версиям transformers
-  if [[ ! -x /workspace/lf/bin/llamafactory-cli ]]; then
-    python -m venv /workspace/lf
-    /workspace/lf/bin/pip install -q "llamafactory[torch] @ git+https://github.com/hiyouga/LLaMA-Factory.git" qwen-vl-utils
-  fi
-  /workspace/lf/bin/llamafactory-cli export ml/merge_lora.yaml
-  echo "✔ модель вмёржена в ml/merged_model"
+  [[ -f ml/lora/adapter_model.safetensors ]] || { echo "✘ распакуй адаптер в ml/lora/ (adapter_config.json + adapter_model.safetensors)"; exit 1; }
+  pkill -f "vllm serve" || true   # мёрж грузит модель на GPU — vLLM не должен её занимать
+  python ml/merge_lora.py --adapter ml/lora --out ml/merged_model
 }
 
 wait_http() {  # url, name, timeout_sec
@@ -81,6 +77,27 @@ start() {
   echo "API для жюри: https://<POD_ID>-8080.proxy.runpod.net/api/v1/analyze"
 }
 
+# Прогон видео через API так же, как это сделает жюри: bash deploy/runpod.sh smoke путь/к/видео.mov
+smoke() {
+  : "${API_KEY:?Задай API_KEY}"
+  local video="${2:?укажи путь к видео}"
+  local t0=$(date +%s)
+  local job=$(curl -sf -X POST http://localhost:8080/api/v1/analyze -H "X-API-Key: $API_KEY" -F "file=@$video" | python -c "import sys,json;print(json.load(sys.stdin)['job_id'])")
+  echo "job=$job"
+  while true; do
+    local r=$(curl -sf http://localhost:8080/api/v1/jobs/$job -H "X-API-Key: $API_KEY")
+    local st=$(echo "$r" | python -c "import sys,json;print(json.load(sys.stdin)['status'])")
+    [[ "$st" != processing ]] && break
+    sleep 2
+  done
+  echo "время: $(( $(date +%s) - t0 )) с"
+  echo "$r" | python -c "
+import sys,json; d=json.load(sys.stdin)
+print(d['status'], d.get('verdict'), d.get('error',''))
+for v in d.get('violations',[]): print(f\"  {v['timecode_sec']:6.1f}s  {v['type']}  | кадров: {len(v.get('evidence_frames',[]))}\")
+print('meta:', d.get('meta'))"
+}
+
 stop() {
   pkill -f "vllm serve" || true
   pkill -f "uvicorn main:app" || true
@@ -88,4 +105,4 @@ stop() {
   echo "остановлено"
 }
 
-"${1:-start}"
+"${1:-start}" "$@"

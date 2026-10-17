@@ -79,7 +79,7 @@
 | Вход | 8 кадров 512 px + короткая инструкция на русском |
 | Выход | JSON `{"violations": [{"type", "timecode_sec", "description"}]}` |
 
-Код подготовки датасета: `ml/prepare_dataset.py`. Ноутбук обучения: `ml/CashGuard_Qwen2_5_VL_LoRA_Colab.ipynb`. Мёрж адаптера: `ml/merge_lora.yaml`.
+Код подготовки датасета: `ml/prepare_dataset.py`. Ноутбук обучения: `ml/CashGuard_Qwen2_5_VL_LoRA_Colab.ipynb`. Мёрж адаптера: `ml/merge_lora.py` (peft, с проверкой, что веса LoRA реально применились).
 
 Если адаптера нет, сервис работает на базовой модели в режиме `PROMPT_MODE=rules`: в промпт подаются все правила из базы знаний, а на кадры наносится таймкод.
 
@@ -197,6 +197,7 @@ unzip cashguard_lora_final.zip -d ml/lora
 bash deploy/runpod.sh merge        # → ml/merged_model (~10 мин)
 
 bash deploy/runpod.sh start        # vLLM + бэкенд + интерфейс
+bash deploy/runpod.sh smoke video.mov   # прогнать видео через API, как это сделает жюри
 ```
 
 Без адаптера `start` поднимет базовую модель в режиме `rules`. Логи — в `deploy/logs/`.
@@ -238,7 +239,7 @@ frontend/app/page.tsx интерфейс: загрузка, статус, вид
 ml/
   prepare_dataset.py  разметка → датасет ShareGPT для LLaMA-Factory
   CashGuard_Qwen2_5_VL_LoRA_Colab.ipynb   обучение
-  merge_lora.yaml     мёрж адаптера
+  merge_lora.py       мёрж адаптера в базовую модель
 deploy/runpod.sh      запуск на GPU-поде
 docker-compose.yml    запуск в Docker
 ```

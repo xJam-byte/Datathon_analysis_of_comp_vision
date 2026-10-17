@@ -24,6 +24,8 @@ from config import (
     WINDOW_STRIDE_SEC,
 )
 
+SAMPLE_MAX_DIM = 1024
+
 
 @dataclass
 class SampledFrame:
@@ -92,9 +94,11 @@ def sample_frames(video_path: str | Path, target_fps: float = SAMPLE_FPS) -> Lis
 
         if frame_idx % sample_interval == 0:
             timestamp = frame_idx / video_fps if video_fps > 0 else 0
+            # Храним уменьшенную копию: в VLM всё равно уходит 512px, а 290 кадров
+            # 1080p заняли бы ~1.8 ГБ RAM. Кадры-доказательства берутся из оригинала.
             sampled.append(SampledFrame(
                 timestamp_sec=round(timestamp, 2),
-                image=frame,
+                image=resize_for_vlm(frame, max_dim=SAMPLE_MAX_DIM),
             ))
         frame_idx += 1
 
