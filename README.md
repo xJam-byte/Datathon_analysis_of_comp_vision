@@ -1,5 +1,11 @@
 # CashGuard — выявление нарушений кассовой дисциплины по видео
 
+<p align="center">
+  <img src="https://img.shields.io/badge/ForteBank-Datathon%2026-951B4C?style=for-the-badge" alt="ForteBank Datathon 26"/>
+  <img src="https://img.shields.io/badge/VLM-Qwen2.5--VL--7B%20%2B%20LoRA-blue?style=for-the-badge" alt="Qwen2.5-VL + LoRA"/>
+  <img src="https://img.shields.io/badge/License-Apache%202.0-green?style=for-the-badge" alt="Apache 2.0"/>
+</p> 
+
 **ForteBank Datathon 26.** Сервис принимает видеозапись с камеры кассового узла, находит эпизоды, похожие на нарушения кассовой дисциплины, и для каждого показывает тип, таймкод, кадры-доказательства, описание увиденного и пункт нормативного акта НБРК.
 
 Результат — подсказка для проверяющего, а не юридическое или дисциплинарное заключение. Сервис оценивает только то, что видно на видео.
