@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "CashGuard — AI Аудит кассовой дисциплины",
+  title: "CashGuard — проверка кассовых видеозаписей",
   description:
     "AI-сервис для выявления нарушений кассовой дисциплины по видеозаписям. ForteBank Datathon 26.",
 };
@@ -22,7 +22,7 @@ export default function RootLayout({
           crossOrigin="anonymous"
         />
         <link
-          href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
+          href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&subset=cyrillic&display=swap"
           rel="stylesheet"
         />
       </head>

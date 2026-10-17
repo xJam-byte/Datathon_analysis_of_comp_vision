@@ -5,6 +5,7 @@ out/
 
 # ─── Среда ────────────
 .env
+!backend/.env.example
 .env.local
 .env.production.local
 
@@ -21,6 +22,8 @@ backend/uploads/
 ml/dataset_output/
 ml/lora_output/
 ml/merged_model/
+ml/lora/
+deploy/logs/
 ml/videos/*
 !ml/videos/.gitkeep
 

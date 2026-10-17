@@ -18,8 +18,10 @@ import numpy as np
 from config import (
     EVIDENCE_JPEG_QUALITY,
     SAMPLE_FPS,
-    WINDOW_OVERLAP_SEC,
+    STAMP_TIMECODE,
+    VLM_MAX_DIM,
     WINDOW_SIZE_SEC,
+    WINDOW_STRIDE_SEC,
 )
 
 
@@ -132,21 +134,32 @@ def stamp_timecode(frame: np.ndarray, timestamp_sec: float) -> np.ndarray:
 def build_sliding_windows(
     frames: List[SampledFrame],
     window_sec: float = WINDOW_SIZE_SEC,
-    overlap_sec: float = WINDOW_OVERLAP_SEC,
+    stride_sec: float = WINDOW_STRIDE_SEC,
 ) -> List[FrameWindow]:
     """
     Разбивает последовательность сэмплированных кадров
-    на скользящие окна заданной длительности.
+    на скользящие окна заданной длительности с шагом stride_sec.
+    Последнее окно прижимается к концу видео, чтобы не терять хвост.
     """
     if not frames:
         return []
 
     total_duration = frames[-1].timestamp_sec
-    step = window_sec - overlap_sec
+    step = max(0.5, stride_sec)
     windows: List[FrameWindow] = []
 
+    starts = []
     start = 0.0
-    while start < total_duration:
+    while start + window_sec < total_duration + step:
+        starts.append(start)
+        start += step
+    if not starts:
+        starts = [0.0]
+    last_start = max(0.0, total_duration - window_sec)
+    if starts[-1] < last_start - 0.25:
+        starts.append(last_start)
+
+    for start in starts:
         end = start + window_sec
         window_frames = [
             f for f in frames
@@ -158,7 +171,6 @@ def build_sliding_windows(
                 end_sec=round(min(end, total_duration), 2),
                 frames=window_frames,
             ))
-        start += step
 
     return windows
 
@@ -261,21 +273,26 @@ def filter_active_windows(
     return active
 
 
-def prepare_window_for_vlm(window: FrameWindow) -> list[dict]:
+def prepare_window_for_vlm(
+    window: FrameWindow,
+    max_dim: int = VLM_MAX_DIM,
+    stamp: bool = STAMP_TIMECODE,
+) -> list[dict]:
     """
     Готовит окно кадров для отправки в VLM:
-    - ресайзит для экономии токенов,
-    - наносит таймкод на копию,
+    - ресайзит (в режиме finetuned — до 512px, как в обучающем датасете),
+    - опционально наносит таймкод (только для режима rules: в обучении надписей не было),
     - кодирует в base64.
     Возвращает список {"timestamp_sec", "image_base64"}.
     """
     vlm_frames = []
     for sf in window.frames:
-        resized = resize_for_vlm(sf.image)
-        stamped = stamp_timecode(resized, sf.timestamp_sec)
+        img = resize_for_vlm(sf.image, max_dim=max_dim)
+        if stamp:
+            img = stamp_timecode(img, sf.timestamp_sec)
         vlm_frames.append({
             "timestamp_sec": sf.timestamp_sec,
-            "image_base64": frame_to_base64(stamped, quality=70),
+            "image_base64": frame_to_base64(img, quality=90),
         })
     return vlm_frames
 

@@ -165,6 +165,7 @@ def build_sharegpt_entry(
     violation_type: str | None = None,
     description: str | None = None,
     apply_augmentation: bool = True,
+    timecode_sec: float = 0.0,
 ) -> dict:
     """
     Формирует одну запись датасета в формате ShareGPT для LLaMA-Factory.
@@ -187,8 +188,9 @@ def build_sharegpt_entry(
         assistant_text = json.dumps({
             "violations": [{
                 "type": violation_type,
-                "timecode_sec": 0.0,
-                "description": description,
+                "timecode_sec": timecode_sec,
+                # нормативку не учим: её подставляет бэкенд из rules_kb.json
+                "description": re.sub(r"\s*Нормативн\w* (?:источник|основани\w*)\s*:.*$", "", description, flags=re.S).strip(),
             }]
         }, ensure_ascii=False)
     else:
@@ -368,6 +370,7 @@ def main():
                     violation_type=ann.get("type", "Нарушение кассовой дисциплины"),
                     description=ann.get("description", ""),
                     apply_augmentation=apply_aug,
+                    timecode_sec=tc,
                 )
                 sharegpt_dataset.append(entry)
 

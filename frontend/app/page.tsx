@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
-// ─── Types ───────────────────────────────────────────────────────────────
+// ─── Типы (схема API, раздел 10 ТЗ + доп. поля бэкенда) ─────────────────
 
 interface EvidenceFrame {
   timestamp_sec: number;
@@ -14,633 +14,694 @@ interface Violation {
   timecode_sec: number;
   description: string;
   evidence_frames?: EvidenceFrame[];
+  rule_code?: string;
+  normative_source?: string;
+  observation?: string;
+  time_range_sec?: [number, number];
 }
 
-interface JobResult {
+interface JobMeta {
+  duration_sec?: number;
+  windows_total?: number;
+  windows_analyzed?: number;
+  windows_failed?: number;
+  processing_time_sec?: number;
+}
+
+interface JobResponse {
   job_id: string;
-  status: "queued" | "processing" | "done" | "failed";
+  status: "processing" | "done" | "failed";
+  stage?: "queued" | "processing";
+  queue_position?: number;
+  progress?: { done: number; total: number };
   verdict?: "violation" | "no_violation";
   violations?: Violation[];
+  meta?: JobMeta;
   error?: string;
 }
 
-// ─── Helpers ─────────────────────────────────────────────────────────────
+type Health = { status: string; model?: string } | null;
 
-const API_URL =
-  process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
-const DEFAULT_KEY =
-  process.env.NEXT_PUBLIC_DEFAULT_API_KEY || "";
+/**
+ * Адрес бэкенда определяется в браузере, а не при сборке:
+ *  - NEXT_PUBLIC_API_URL, если задан при сборке;
+ *  - RunPod-прокси: https://<pod>-3000.proxy.runpod.net → https://<pod>-8080.proxy.runpod.net;
+ *  - иначе тот же хост, порт 8080.
+ */
+function resolveApiUrl(): string {
+  if (process.env.NEXT_PUBLIC_API_URL) return process.env.NEXT_PUBLIC_API_URL.replace(/\/$/, "");
+  if (typeof window === "undefined") return "http://localhost:8080";
+  const { protocol, hostname } = window.location;
+  if (/-3000\./.test(hostname)) return `${protocol}//${hostname.replace("-3000.", "-8080.")}`;
+  return `${protocol}//${hostname}:8080`;
+}
+const DEFAULT_KEY = process.env.NEXT_PUBLIC_DEFAULT_API_KEY || "";
+const ACCEPTED = [".mov", ".mp4"];
+const POLL_MS = 2000;
+const POLL_GIVE_UP_MS = 8 * 60 * 1000;
+
+// ─── Утилиты ─────────────────────────────────────────────────────────────
 
 function formatTime(sec: number): string {
   const m = Math.floor(sec / 60);
-  const s = Math.floor(sec % 60);
-  const ms = Math.round((sec % 1) * 10);
-  return `${m}:${s.toString().padStart(2, "0")}.${ms}`;
+  const s = sec - m * 60;
+  return `${m}:${s.toFixed(1).padStart(4, "0")}`;
 }
 
-/** Highlight normative references in description text */
-function highlightNormRef(text: string): React.ReactNode[] {
-  const parts = text.split(
-    /(Постановлени[еяю]\s+(?:Правления\s+)?НБРК\s*№\s*\d+[^.]*(?:\.\s*)?)/gi
-  );
-  return parts.map((part, i) =>
-    /Постановлени/i.test(part) ? (
-      <span key={i} className="norm-ref">
-        📜 {part.trim()}
-      </span>
-    ) : (
-      <span key={i}>{part}</span>
-    )
-  );
+function isAccepted(name: string) {
+  const n = name.toLowerCase();
+  return ACCEPTED.some((ext) => n.endsWith(ext));
 }
 
-// ═════════════════════════════════════════════════════════════════════════
-// COMPONENTS
-// ═════════════════════════════════════════════════════════════════════════
+/** Отделяет наблюдение от ссылки на норму для старых ответов без доп. полей */
+function splitDescription(v: Violation): { observation: string; source: string } {
+  if (v.observation !== undefined && v.normative_source) {
+    return { observation: v.observation, source: v.normative_source };
+  }
+  const idx = v.description.search(/Нормативн\w*\s+источник\s*:/i);
+  if (idx === -1) return { observation: v.description, source: v.normative_source || "" };
+  return {
+    observation: v.description.slice(0, idx).trim(),
+    source: v.description.slice(idx).replace(/^Нормативн\w*\s+источник\s*:\s*/i, "").replace(/\.$/, ""),
+  };
+}
 
-/** Header */
-function Header({
-  apiKey,
-  setApiKey,
-}: {
-  apiKey: string;
-  setApiKey: (k: string) => void;
-}) {
-  const [showKey, setShowKey] = useState(false);
+// ─── Шапка ───────────────────────────────────────────────────────────────
+
+function Header({ apiKey, setApiKey, health }: { apiKey: string; setApiKey: (k: string) => void; health: Health }) {
+  const [open, setOpen] = useState(false);
+  const ready = health?.status === "ok";
+  const statusText = health === null ? "Сервер недоступен" : ready ? "Модель готова" : "Модель загружается или недоступна";
+
   return (
-    <header className="glass-card-dark text-white">
-      <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between flex-wrap gap-4">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-forte-primary to-forte-accent flex items-center justify-center text-xl font-bold shadow-lg">
-            🛡️
-          </div>
-          <div>
-            <h1 className="text-lg font-bold tracking-tight">CashGuard</h1>
-            <p className="text-xs text-graphite-400">
-              AI Аудит кассовой дисциплины
-            </p>
-          </div>
+    <header className="bg-surface border-b border-line">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3 flex items-center gap-4 flex-wrap">
+        <div className="flex items-baseline gap-3 mr-auto">
+          <span className="text-lg font-semibold tracking-tight">CashGuard</span>
+          <span className="text-sm text-muted hidden sm:inline">проверка кассовых видеозаписей</span>
         </div>
 
-        <div className="flex items-center gap-2">
-          <label className="text-xs text-graphite-400 mr-1">API Key:</label>
-          <div className="relative">
-            <input
-              id="api-key-input"
-              type={showKey ? "text" : "password"}
-              value={apiKey}
-              onChange={(e) => {
-                setApiKey(e.target.value);
-                localStorage.setItem("cashguard_api_key", e.target.value);
-              }}
-              className="bg-graphite-700 border border-graphite-600 rounded-lg px-3 py-1.5 text-sm w-64 focus:outline-none focus:border-forte-primary transition-colors text-white placeholder-graphite-400"
-              placeholder="Введите X-API-Key"
-            />
-            <button
-              onClick={() => setShowKey(!showKey)}
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-graphite-400 hover:text-white transition-colors text-xs"
-            >
-              {showKey ? "🙈" : "👁️"}
-            </button>
-          </div>
+        <span className="flex items-center gap-2 text-sm text-muted" role="status">
+          <span className={`w-2 h-2 rounded-full ${ready ? "bg-clear" : "bg-alert"}`} aria-hidden />
+          {statusText}
+        </span>
+
+        <div className="relative">
+          <button className="btn-ghost text-sm" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
+            Ключ API {apiKey ? "задан" : "не задан"}
+          </button>
+          {open && (
+            <div className="absolute right-0 mt-2 w-72 panel p-3 shadow-lg z-20">
+              <label htmlFor="api-key" className="block text-sm text-muted mb-1">
+                X-API-Key
+              </label>
+              <input
+                id="api-key"
+                type="password"
+                value={apiKey}
+                onChange={(e) => {
+                  setApiKey(e.target.value);
+                  try {
+                    localStorage.setItem("cashguard_api_key", e.target.value);
+                  } catch {}
+                }}
+                className="w-full border border-line rounded-md px-3 py-2 text-sm"
+                placeholder="Ключ, выданный командой"
+                autoComplete="off"
+              />
+            </div>
+          )}
         </div>
       </div>
     </header>
   );
 }
 
-/** Drag-and-Drop Upload Zone */
-function UploadZone({
-  onFileSelect,
-  file,
-  uploading,
-}: {
-  onFileSelect: (f: File) => void;
-  file: File | null;
-  uploading: boolean;
-}) {
-  const [dragActive, setDragActive] = useState(false);
+// ─── Загрузка ────────────────────────────────────────────────────────────
+
+function UploadZone({ onFile, onReject }: { onFile: (f: File) => void; onReject: (msg: string) => void }) {
+  const [active, setActive] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const handleDrag = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setDragActive(e.type === "dragenter" || e.type === "dragover");
-  }, []);
-
-  const handleDrop = useCallback(
-    (e: React.DragEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
-      setDragActive(false);
-      const f = e.dataTransfer.files[0];
-      if (f && (f.name.toLowerCase().endsWith(".mov") || f.name.toLowerCase().endsWith(".mp4"))) {
-        onFileSelect(f);
-      }
-    },
-    [onFileSelect]
-  );
+  const take = (f: File | undefined) => {
+    if (!f) return;
+    if (!isAccepted(f.name)) {
+      onReject(`Файл «${f.name}» не подходит: нужен .mov или .mp4.`);
+      return;
+    }
+    onFile(f);
+  };
 
   return (
     <div
-      className={`dropzone rounded-2xl p-8 text-center cursor-pointer transition-all ${
-        dragActive ? "dropzone-active" : ""
-      }`}
-      onDragEnter={handleDrag}
-      onDragOver={handleDrag}
-      onDragLeave={handleDrag}
-      onDrop={handleDrop}
+      role="button"
+      tabIndex={0}
+      className={`dropzone p-10 text-center cursor-pointer ${active ? "dropzone-active" : ""}`}
       onClick={() => inputRef.current?.click()}
+      onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && inputRef.current?.click()}
+      onDragOver={(e) => {
+        e.preventDefault();
+        setActive(true);
+      }}
+      onDragLeave={() => setActive(false)}
+      onDrop={(e) => {
+        e.preventDefault();
+        setActive(false);
+        take(e.dataTransfer.files[0]);
+      }}
     >
       <input
         ref={inputRef}
-        id="file-input"
         type="file"
         accept=".mov,.mp4,video/quicktime,video/mp4"
         className="hidden"
         onChange={(e) => {
-          const f = e.target.files?.[0];
-          if (f) onFileSelect(f);
+          take(e.target.files?.[0]);
+          e.target.value = "";
         }}
       />
-
-      {!file ? (
-        <div className="py-6">
-          <div className="text-5xl mb-4">📹</div>
-          <p className="text-graphite-600 font-medium text-lg mb-1">
-            Перетащите видеофайл сюда
-          </p>
-          <p className="text-graphite-400 text-sm">
-            или нажмите для выбора • форматы <code className="bg-graphite-100 px-1.5 py-0.5 rounded text-forte-primary font-mono text-xs">.mov / .mp4</code> • до 100 МБ
-          </p>
-        </div>
-      ) : (
-        <div className="flex items-center justify-center gap-3 py-2">
-          <div className="text-3xl">🎬</div>
-          <div className="text-left">
-            <p className="font-semibold text-graphite-900">{file.name}</p>
-            <p className="text-sm text-graphite-400">
-              {(file.size / 1024 / 1024).toFixed(1)} МБ
-            </p>
-          </div>
-          {uploading && (
-            <div className="ml-4">
-              <div className="w-5 h-5 border-2 border-forte-primary border-t-transparent rounded-full animate-spin-slow" />
-            </div>
-          )}
-        </div>
-      )}
+      <p className="text-lg font-medium">Перетащите видеозапись кассы сюда</p>
+      <p className="text-muted text-sm mt-1">или нажмите, чтобы выбрать файл · .mov или .mp4</p>
     </div>
   );
 }
 
-/** Video Preview Player */
-function VideoPlayer({
-  file,
-  videoRef,
-}: {
-  file: File;
-  videoRef: React.RefObject<HTMLVideoElement | null>;
-}) {
-  const [url, setUrl] = useState<string>("");
+// ─── Таймлайн доказательств ──────────────────────────────────────────────
 
-  useEffect(() => {
-    const u = URL.createObjectURL(file);
-    setUrl(u);
-    return () => URL.revokeObjectURL(u);
-  }, [file]);
-
-  if (!url) return null;
-
-  return (
-    <div className="glass-card rounded-2xl overflow-hidden mt-4 animate-fade-in-up">
-      <video
-        ref={videoRef}
-        src={url}
-        controls
-        className="w-full max-h-[400px] bg-black"
-      />
-    </div>
-  );
-}
-
-/** Processing Status */
-function ProcessingStatus({
-  status,
-  elapsed,
-}: {
-  status: string;
-  elapsed: number;
-}) {
-  return (
-    <div className="glass-card rounded-2xl p-6 mt-6 animate-fade-in-up">
-      <div className="flex items-center gap-4">
-        <div className="relative">
-          <div className="w-12 h-12 rounded-full bg-gradient-to-br from-forte-primary to-forte-accent flex items-center justify-center">
-            <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin-slow" />
-          </div>
-          <div className="absolute inset-0 rounded-full border-2 border-forte-primary opacity-50 animate-ping" />
-        </div>
-        <div>
-          <p className="font-semibold text-graphite-900 text-lg">
-            {status === "queued" ? "В очереди..." : "Анализ видео..."}
-          </p>
-          <p className="text-graphite-400 text-sm">
-            {status === "queued"
-              ? "Ожидание GPU"
-              : "VLM анализирует кадры на наличие нарушений"}
-          </p>
-        </div>
-        <div className="ml-auto text-right">
-          <p className="text-2xl font-bold text-forte-primary tabular-nums">
-            {Math.floor(elapsed)}с
-          </p>
-          <p className="text-xs text-graphite-400">прошло</p>
-        </div>
-      </div>
-      <div className="mt-4 h-1.5 bg-graphite-100 rounded-full overflow-hidden">
-        <div className="h-full bg-gradient-to-r from-forte-primary to-forte-accent animate-shimmer rounded-full w-full" />
-      </div>
-    </div>
-  );
-}
-
-/** Verdict Badge */
-function VerdictBadge({ verdict }: { verdict: "violation" | "no_violation" }) {
-  const isViolation = verdict === "violation";
-  return (
-    <div
-      className={`rounded-2xl p-6 mt-6 animate-fade-in-up text-center ${
-        isViolation
-          ? "bg-gradient-to-r from-danger/10 to-danger/5 border border-danger/20"
-          : "bg-gradient-to-r from-success/10 to-success/5 border border-success/20"
-      }`}
-    >
-      <div className="text-5xl mb-3">{isViolation ? "⚠️" : "✅"}</div>
-      <h2
-        className={`text-2xl font-bold mb-1 ${
-          isViolation ? "text-danger" : "text-success"
-        }`}
-      >
-        {isViolation
-          ? "Обнаружены признаки возможных нарушений"
-          : "Нарушений не обнаружено"}
-      </h2>
-      <p className="text-graphite-400 text-sm">
-        {isViolation
-          ? "Результаты анализа требуют внимания аудитора"
-          : "Видеозапись соответствует нормативным требованиям НБРК"}
-      </p>
-    </div>
-  );
-}
-
-/** Evidence Frame Modal */
-function FrameModal({
-  frame,
-  onClose,
-}: {
-  frame: EvidenceFrame;
-  onClose: () => void;
-}) {
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
-      onClick={onClose}
-    >
-      <div
-        className="relative max-w-4xl w-full animate-fade-in-up"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <button
-          onClick={onClose}
-          className="absolute -top-3 -right-3 w-10 h-10 rounded-full bg-white shadow-lg flex items-center justify-center text-graphite-600 hover:text-danger transition-colors text-xl z-10"
-        >
-          ✕
-        </button>
-        <img
-          src={`data:image/jpeg;base64,${frame.image_base64}`}
-          alt={`Evidence at ${frame.timestamp_sec}s`}
-          className="w-full rounded-2xl shadow-2xl"
-        />
-        <div className="absolute bottom-4 left-4 bg-black/60 backdrop-blur-sm text-white px-3 py-1.5 rounded-lg text-sm font-medium">
-          ⏱️ {formatTime(frame.timestamp_sec)}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/** Single Violation Card */
-function ViolationCard({
-  violation,
-  index,
+function EvidenceTimeline({
+  duration,
+  current,
+  violations,
+  activeIndex,
+  onSelect,
   onSeek,
 }: {
-  violation: Violation;
-  index: number;
+  duration: number;
+  current: number;
+  violations: Violation[];
+  activeIndex: number | null;
+  onSelect: (i: number) => void;
   onSeek: (t: number) => void;
 }) {
-  const [modalFrame, setModalFrame] = useState<EvidenceFrame | null>(null);
+  if (!duration) return null;
+  const pct = (t: number) => `${Math.min(100, Math.max(0, (t / duration) * 100))}%`;
 
   return (
-    <>
-      {modalFrame && (
-        <FrameModal frame={modalFrame} onClose={() => setModalFrame(null)} />
-      )}
-
+    <div className="mt-3">
       <div
-        className="glass-card rounded-2xl p-5 animate-fade-in-up"
-        style={{ animationDelay: `${index * 100}ms` }}
+        className="timeline"
+        onClick={(e) => {
+          const r = e.currentTarget.getBoundingClientRect();
+          onSeek(((e.clientX - r.left) / r.width) * duration);
+        }}
+        aria-label="Таймлайн видео с отметками нарушений"
       >
-        {/* Header */}
-        <div className="flex items-start justify-between gap-3 mb-3">
-          <div className="flex items-start gap-3">
-            <div className="w-8 h-8 rounded-lg bg-danger/10 flex items-center justify-center text-danger font-bold text-sm shrink-0 mt-0.5">
-              {index + 1}
-            </div>
-            <div>
-              <h3 className="font-bold text-graphite-900 text-base leading-snug">
-                {violation.type}
-              </h3>
-            </div>
-          </div>
+        {violations.map((v, i) =>
+          v.time_range_sec ? (
+            <div
+              key={`r${i}`}
+              className="timeline-range"
+              style={{ left: pct(v.time_range_sec[0]), width: `calc(${pct(v.time_range_sec[1])} - ${pct(v.time_range_sec[0])})` }}
+            />
+          ) : null
+        )}
+        {violations.map((v, i) => (
           <button
-            id={`seek-btn-${index}`}
-            onClick={() => onSeek(violation.timecode_sec)}
-            className="shrink-0 flex items-center gap-1.5 bg-forte-primary/10 hover:bg-forte-primary/20 text-forte-primary px-3 py-1.5 rounded-lg text-sm font-semibold transition-colors cursor-pointer"
-          >
-            ▶ {formatTime(violation.timecode_sec)}
-          </button>
-        </div>
+            key={`m${i}`}
+            className="timeline-mark"
+            data-active={activeIndex === i}
+            style={{ left: pct(v.timecode_sec) }}
+            title={`${formatTime(v.timecode_sec)} — ${v.type}`}
+            aria-label={`Нарушение ${i + 1} на ${formatTime(v.timecode_sec)}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              onSelect(i);
+            }}
+          />
+        ))}
+        <div className="timeline-playhead" style={{ left: pct(current) }} />
+      </div>
+      <div className="flex justify-between text-xs text-muted tnum mt-1">
+        <span>0:00.0</span>
+        <span>{formatTime(duration)}</span>
+      </div>
+    </div>
+  );
+}
 
-        {/* Description */}
-        <div className="text-sm text-graphite-600 leading-relaxed mb-4 pl-11">
-          {highlightNormRef(violation.description)}
-        </div>
+// ─── Статус обработки ────────────────────────────────────────────────────
 
-        {/* Evidence Frames */}
-        {violation.evidence_frames && violation.evidence_frames.length > 0 && (
-          <div className="pl-11">
-            <p className="text-xs text-graphite-400 font-medium mb-2 uppercase tracking-wider">
-              Кадры-доказательства
-            </p>
-            <div className="flex gap-2 overflow-x-auto pb-1">
-              {violation.evidence_frames.map((frame, fi) => (
-                <button
-                  key={fi}
-                  onClick={() => setModalFrame(frame)}
-                  className="relative shrink-0 group cursor-pointer"
-                >
+function ProcessingPanel({ job, elapsed }: { job: JobResponse | null; elapsed: number }) {
+  const p = job?.progress;
+  const queued = job?.stage === "queued";
+  const ratio = p && p.total > 0 ? p.done / p.total : null;
+
+  let title = "Загружаем видео на сервер";
+  let detail = "";
+  if (job) {
+    if (queued) {
+      title = "Видео в очереди";
+      detail = job.queue_position ? `Перед ним ещё ${job.queue_position - 1} видео` : "Скоро начнём";
+    } else if (!p || p.total === 0) {
+      title = "Извлекаем кадры из видео";
+    } else {
+      title = "Модель просматривает видео";
+      detail = `Проверено фрагментов: ${p.done} из ${p.total}`;
+    }
+  }
+
+  return (
+    <div className="panel p-5" role="status" aria-live="polite">
+      <div className="flex items-baseline justify-between gap-4">
+        <p className="font-semibold">{title}</p>
+        <p className="text-muted text-sm tnum">{Math.floor(elapsed)} с</p>
+      </div>
+      {detail && <p className="text-sm text-muted mt-1">{detail}</p>}
+      <div className="progress-track mt-4">
+        {ratio === null ? (
+          <div className="progress-bar progress-indeterminate" />
+        ) : (
+          <div className="progress-bar" style={{ width: `${Math.max(4, ratio * 100)}%` }} />
+        )}
+      </div>
+      <p className="text-xs text-muted mt-3">Обычно анализ занимает 1–3 минуты. Страницу можно не обновлять.</p>
+    </div>
+  );
+}
+
+// ─── Вердикт ─────────────────────────────────────────────────────────────
+
+function Verdict({ job, onExport }: { job: JobResponse; onExport: () => void }) {
+  const isViolation = job.verdict === "violation";
+  const count = job.violations?.length ?? 0;
+  const m = job.meta;
+
+  return (
+    <div className={`rounded-[10px] p-5 border ${isViolation ? "bg-forte-soft border-forte/30" : "bg-clear-soft border-clear/30"}`}>
+      <p className={`text-xl font-semibold ${isViolation ? "text-forte" : "text-clear"}`}>
+        {isViolation ? "Обнаружены признаки возможных нарушений" : "Нарушение не обнаружено"}
+      </p>
+      <p className="text-sm mt-1">
+        {isViolation
+          ? `Найдено эпизодов: ${count}. Проверьте каждый по кадрам и видео.`
+          : "Модель не нашла на видео признаков нарушений из перечня правил."}
+      </p>
+      <p className="text-xs text-muted mt-3">
+        Результат — подсказка для проверяющего, а не юридическое или дисциплинарное заключение. Сервис оценивает только
+        то, что видно на видео.
+      </p>
+      <div className="flex items-center justify-between gap-3 mt-4 flex-wrap">
+        <p className="text-xs text-muted tnum">
+          {m?.processing_time_sec !== undefined && `Анализ: ${Math.round(m.processing_time_sec)} с`}
+          {m?.windows_analyzed !== undefined && ` · проверено фрагментов: ${m.windows_analyzed} из ${m.windows_total}`}
+          {` · задача ${job.job_id}`}
+        </p>
+        <button className="btn-ghost text-sm" onClick={onExport}>
+          Скачать отчёт JSON
+        </button>
+      </div>
+      {!!m?.windows_failed && (
+        <p className="text-xs text-alert mt-2">
+          {m.windows_failed} фрагм. не удалось проверить — часть видео могла остаться без анализа.
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ─── Карточка нарушения ──────────────────────────────────────────────────
+
+function FindingCard({
+  v,
+  index,
+  active,
+  onSeek,
+  onOpenFrame,
+}: {
+  v: Violation;
+  index: number;
+  active: boolean;
+  onSeek: (t: number) => void;
+  onOpenFrame: (f: EvidenceFrame) => void;
+}) {
+  const { observation, source } = splitDescription(v);
+
+  return (
+    <article id={`finding-${index}`} className="panel finding p-5" data-active={active}>
+      <div className="flex items-start gap-3">
+        <span className="tnum text-sm text-muted pt-0.5 w-5 shrink-0">{index + 1}</span>
+        <h3 className="font-semibold leading-snug flex-1">{v.type}</h3>
+        <button
+          className="shrink-0 tnum text-sm font-semibold text-forte bg-forte-soft hover:bg-forte hover:text-white px-2.5 py-1 rounded-md transition-colors"
+          onClick={() => onSeek(v.timecode_sec)}
+          title="Перемотать видео к этому моменту"
+        >
+          ▶ {formatTime(v.timecode_sec)}
+        </button>
+      </div>
+
+      <div className="pl-8 mt-3 space-y-3">
+        {observation && (
+          <div>
+            <p className="text-xs text-muted mb-0.5">Что видно на видео</p>
+            <p className="text-[15px]">{observation}</p>
+          </div>
+        )}
+
+        {source && (
+          <div className="border-l-2 border-forte pl-3">
+            <p className="text-xs text-muted mb-0.5">Правило{v.rule_code ? ` ${v.rule_code}` : ""}</p>
+            <p className="text-sm">{source}</p>
+          </div>
+        )}
+
+        {!!v.evidence_frames?.length && (
+          <div>
+            <p className="text-xs text-muted mb-1.5">Кадры-доказательства</p>
+            <div className="grid grid-cols-3 gap-2">
+              {v.evidence_frames.map((f, i) => (
+                <button key={i} className="relative group" onClick={() => onOpenFrame(f)} title="Открыть кадр">
                   <img
-                    src={`data:image/jpeg;base64,${frame.image_base64}`}
-                    alt={`Evidence ${fi + 1}`}
-                    className="w-36 h-24 object-cover rounded-lg border border-graphite-100 group-hover:border-forte-primary transition-colors"
+                    src={`data:image/jpeg;base64,${f.image_base64}`}
+                    alt={`Кадр на ${formatTime(f.timestamp_sec)}`}
+                    className="w-full aspect-video object-cover rounded-md border border-line group-hover:border-forte"
                   />
-                  <div className="absolute bottom-1 right-1 bg-black/60 text-white text-[10px] px-1.5 py-0.5 rounded font-mono">
-                    {formatTime(frame.timestamp_sec)}
-                  </div>
-                  <div className="absolute inset-0 bg-forte-primary/0 group-hover:bg-forte-primary/10 rounded-lg transition-colors flex items-center justify-center">
-                    <span className="opacity-0 group-hover:opacity-100 text-white text-lg transition-opacity drop-shadow-lg">
-                      🔍
-                    </span>
-                  </div>
+                  <span className="absolute bottom-1 left-1 bg-ink/75 text-white text-[11px] px-1.5 rounded tnum">
+                    {formatTime(f.timestamp_sec)}
+                  </span>
                 </button>
               ))}
             </div>
           </div>
         )}
       </div>
-    </>
+    </article>
+  );
+}
+
+function FrameModal({ frame, onClose }: { frame: EvidenceFrame; onClose: () => void }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div className="fixed inset-0 z-50 bg-ink/80 flex items-center justify-center p-4" onClick={onClose} role="dialog" aria-modal>
+      <figure className="max-w-5xl w-full" onClick={(e) => e.stopPropagation()}>
+        <img src={`data:image/jpeg;base64,${frame.image_base64}`} alt="Кадр-доказательство" className="w-full rounded-md" />
+        <figcaption className="flex justify-between items-center text-white mt-2 text-sm">
+          <span className="tnum">Кадр на {formatTime(frame.timestamp_sec)}</span>
+          <button className="underline" onClick={onClose}>
+            Закрыть
+          </button>
+        </figcaption>
+      </figure>
+    </div>
   );
 }
 
 // ═════════════════════════════════════════════════════════════════════════
-// MAIN PAGE
-// ═════════════════════════════════════════════════════════════════════════
 
 export default function HomePage() {
   const [apiKey, setApiKey] = useState(DEFAULT_KEY);
+  const [health, setHealth] = useState<Health>({ status: "unknown" });
   const [file, setFile] = useState<File | null>(null);
-  const [uploading, setUploading] = useState(false);
-  const [jobId, setJobId] = useState<string | null>(null);
-  const [result, setResult] = useState<JobResult | null>(null);
+  const [videoUrl, setVideoUrl] = useState("");
+  const [duration, setDuration] = useState(0);
+  const [current, setCurrent] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const [job, setJob] = useState<JobResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
+  const [activeIndex, setActiveIndex] = useState<number | null>(null);
+  const [modalFrame, setModalFrame] = useState<EvidenceFrame | null>(null);
 
   const videoRef = useRef<HTMLVideoElement>(null);
-  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const startTimeRef = useRef<number>(0);
+  const timers = useRef<{ poll?: ReturnType<typeof setInterval>; tick?: ReturnType<typeof setInterval> }>({});
 
-  // Load API key from localStorage
-  useEffect(() => {
-    const saved = localStorage.getItem("cashguard_api_key");
-    if (saved) setApiKey(saved);
-  }, []);
-
-  // Cleanup polling on unmount
-  useEffect(() => {
-    return () => {
-      if (pollingRef.current) clearInterval(pollingRef.current);
-      if (timerRef.current) clearInterval(timerRef.current);
-    };
-  }, []);
-
-  const resetState = () => {
-    setJobId(null);
-    setResult(null);
-    setError(null);
-    setElapsed(0);
-    if (pollingRef.current) clearInterval(pollingRef.current);
-    if (timerRef.current) clearInterval(timerRef.current);
+  const stopTimers = () => {
+    clearInterval(timers.current.poll);
+    clearInterval(timers.current.tick);
   };
 
-  const handleFileSelect = (f: File) => {
-    resetState();
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("cashguard_api_key");
+      if (saved) setApiKey(saved);
+    } catch {}
+    return stopTimers;
+  }, []);
+
+  // Состояние сервиса
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const r = await fetch(`${resolveApiUrl()}/health`);
+        setHealth(r.ok ? await r.json() : null);
+      } catch {
+        setHealth(null);
+      }
+    };
+    load();
+    const id = setInterval(load, 15000);
+    return () => clearInterval(id);
+  }, []);
+
+  useEffect(() => {
+    if (!file) return;
+    const u = URL.createObjectURL(file);
+    setVideoUrl(u);
+    return () => URL.revokeObjectURL(u);
+  }, [file]);
+
+  const reset = () => {
+    stopTimers();
+    setJob(null);
+    setError(null);
+    setElapsed(0);
+    setActiveIndex(null);
+  };
+
+  const chooseFile = (f: File) => {
+    reset();
+    setDuration(0);
     setFile(f);
   };
 
-  const seekTo = (t: number) => {
-    if (videoRef.current) {
-      videoRef.current.currentTime = t;
-      videoRef.current.play();
-    }
-  };
+  const seek = useCallback((t: number) => {
+    const v = videoRef.current;
+    if (!v) return;
+    v.currentTime = Math.max(0, t);
+    v.pause();
+  }, []);
 
-  // ── Upload & Start Analysis ──────────────────────────────────────────
-  const handleAnalyze = async () => {
-    if (!file || !apiKey) return;
-    resetState();
-    setUploading(true);
-    setError(null);
+  const selectFinding = useCallback(
+    (i: number) => {
+      setActiveIndex(i);
+      const v = job?.violations?.[i];
+      if (v) seek(v.timecode_sec);
+      document.getElementById(`finding-${i}`)?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    },
+    [job, seek]
+  );
+
+  const analyze = async () => {
+    if (!file) return;
+    if (!apiKey) {
+      setError("Укажите ключ API в правом верхнем углу.");
+      return;
+    }
+    reset();
+    setBusy(true);
+    const started = Date.now();
+    timers.current.tick = setInterval(() => setElapsed((Date.now() - started) / 1000), 250);
 
     try {
-      const formData = new FormData();
-      formData.append("file", file);
-
-      const resp = await fetch(`${API_URL}/api/v1/analyze`, {
-        method: "POST",
-        headers: { "X-API-Key": apiKey },
-        body: formData,
-      });
-
-      if (resp.status === 401 || resp.status === 403) {
-        setError("Неверный API-ключ. Проверьте X-API-Key.");
-        setUploading(false);
-        return;
-      }
-
+      const form = new FormData();
+      form.append("file", file);
+      const resp = await fetch(`${resolveApiUrl()}/api/v1/analyze`, { method: "POST", headers: { "X-API-Key": apiKey }, body: form });
+      if (resp.status === 401 || resp.status === 403) throw new Error("Ключ API не подошёл. Проверьте его в правом верхнем углу.");
       if (!resp.ok) {
         const body = await resp.json().catch(() => ({}));
-        setError(body.detail || `Ошибка ${resp.status}`);
-        setUploading(false);
-        return;
+        throw new Error(body.detail || `Сервер ответил ошибкой ${resp.status}.`);
       }
+      const { job_id } = await resp.json();
+      setJob({ job_id, status: "processing", stage: "queued" });
 
-      const data = await resp.json();
-      setJobId(data.job_id);
-      setUploading(false);
-
-      // Start timer
-      startTimeRef.current = Date.now();
-      timerRef.current = setInterval(() => {
-        setElapsed((Date.now() - startTimeRef.current) / 1000);
-      }, 100);
-
-      // Start polling
-      pollingRef.current = setInterval(async () => {
+      timers.current.poll = setInterval(async () => {
+        if (Date.now() - started > POLL_GIVE_UP_MS) {
+          stopTimers();
+          setBusy(false);
+          setError("Анализ идёт дольше 8 минут. Проверьте состояние сервера и запустите анализ заново.");
+          return;
+        }
         try {
-          const pollResp = await fetch(
-            `${API_URL}/api/v1/jobs/${data.job_id}`,
-            { headers: { "X-API-Key": apiKey } }
-          );
-          if (!pollResp.ok) return;
-          const pollData: JobResult = await pollResp.json();
-
-          if (pollData.status === "done" || pollData.status === "failed") {
-            setResult(pollData);
-            if (pollingRef.current) clearInterval(pollingRef.current);
-            if (timerRef.current) clearInterval(timerRef.current);
+          const r = await fetch(`${resolveApiUrl()}/api/v1/jobs/${job_id}`, { headers: { "X-API-Key": apiKey } });
+          if (r.status === 404) {
+            stopTimers();
+            setBusy(false);
+            setError("Сервер не знает эту задачу — скорее всего, он перезапускался. Запустите анализ заново.");
+            return;
+          }
+          if (!r.ok) return;
+          const data: JobResponse = await r.json();
+          setJob(data);
+          if (data.status !== "processing") {
+            stopTimers();
+            setBusy(false);
+            if (data.violations?.length) setActiveIndex(0);
           }
         } catch {
-          // Silent retry on network errors
+          // сеть моргнула — пробуем на следующем тике
         }
-      }, 2000);
-    } catch (err) {
-      setError("Ошибка сети. Проверьте подключение к серверу.");
-      setUploading(false);
+      }, POLL_MS);
+    } catch (e) {
+      stopTimers();
+      setBusy(false);
+      setError(e instanceof Error && e.message !== "Failed to fetch" ? e.message : "Нет связи с сервером. Проверьте адрес и подключение.");
     }
   };
 
-  const isProcessing =
-    jobId && (!result || result.status === "processing" || result.status === "queued");
+  const exportJson = () => {
+    if (!job) return;
+    const blob = new Blob([JSON.stringify(job, null, 2)], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `cashguard_${job.job_id}.json`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+
+  const done = job?.status === "done";
+  const violations = done ? job?.violations ?? [] : [];
 
   return (
     <div className="min-h-screen flex flex-col">
-      <Header apiKey={apiKey} setApiKey={setApiKey} />
+      <Header apiKey={apiKey} setApiKey={setApiKey} health={health} />
+      {modalFrame && <FrameModal frame={modalFrame} onClose={() => setModalFrame(null)} />}
 
-      <main className="flex-1 max-w-4xl mx-auto w-full px-4 py-8">
-        {/* Upload Section */}
-        <section className="glass-card rounded-2xl p-6 mb-6">
-          <h2 className="text-xl font-bold text-graphite-900 mb-4 flex items-center gap-2">
-            <span className="text-2xl">📤</span> Загрузить видео для анализа
-          </h2>
-
-          <UploadZone
-            onFileSelect={handleFileSelect}
-            file={file}
-            uploading={uploading}
-          />
-
-          {file && (
-            <div className="mt-4 flex justify-end">
-              <button
-                id="analyze-btn"
-                className="btn-forte flex items-center gap-2"
-                disabled={uploading || !!isProcessing || !apiKey}
-                onClick={handleAnalyze}
-              >
-                {uploading ? (
-                  <>
-                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin-slow" />
-                    Загрузка...
-                  </>
-                ) : (
-                  <>🔍 Начать анализ</>
-                )}
-              </button>
-            </div>
-          )}
-        </section>
-
-        {/* Video Preview */}
-        {file && <VideoPlayer file={file} videoRef={videoRef} />}
-
-        {/* Error */}
-        {error && (
-          <div className="mt-6 bg-danger/10 border border-danger/20 text-danger rounded-2xl p-4 animate-fade-in-up flex items-center gap-3">
-            <span className="text-2xl">❌</span>
-            <p className="font-medium">{error}</p>
-          </div>
-        )}
-
-        {/* Processing Status */}
-        {isProcessing && (
-          <ProcessingStatus
-            status={result?.status || "queued"}
-            elapsed={elapsed}
-          />
-        )}
-
-        {/* Failed */}
-        {result?.status === "failed" && (
-          <div className="mt-6 bg-danger/10 border border-danger/20 text-danger rounded-2xl p-6 animate-fade-in-up text-center">
-            <div className="text-4xl mb-2">💥</div>
-            <h3 className="text-lg font-bold mb-1">Ошибка обработки</h3>
-            <p className="text-sm">{result.error || "Неизвестная ошибка"}</p>
-          </div>
-        )}
-
-        {/* Results */}
-        {result?.status === "done" && (
-          <div className="mt-6 space-y-4">
-            <VerdictBadge verdict={result.verdict!} />
-
-            {result.violations && result.violations.length > 0 && (
-              <div className="space-y-4 mt-6">
-                <h2 className="text-lg font-bold text-graphite-900 flex items-center gap-2">
-                  <span className="text-xl">📋</span>
-                  Обнаруженные нарушения ({result.violations.length})
-                </h2>
-                {result.violations.map((v, i) => (
-                  <ViolationCard
-                    key={i}
-                    violation={v}
-                    index={i}
-                    onSeek={seekTo}
-                  />
-                ))}
+      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6">
+        {!file ? (
+          <section className="max-w-3xl">
+            <h1 className="text-2xl font-semibold tracking-tight">Проверка видеозаписи кассы</h1>
+            <p className="text-muted mt-1 mb-5 max-w-[62ch]">
+              Загрузите запись с камеры кассового узла. Сервис найдёт эпизоды, похожие на нарушения кассовой дисциплины,
+              покажет момент на видео, кадры и пункт нормативного акта НБРК.
+            </p>
+            <UploadZone onFile={chooseFile} onReject={setError} />
+            {error && <p className="text-alert text-sm mt-3">{error}</p>}
+            <p className="text-xs text-muted mt-4 max-w-[62ch]">
+              Видео обрабатывается локально на сервере команды, без внешних AI-сервисов. Лица не распознаются.
+            </p>
+          </section>
+        ) : (
+          <div className="grid lg:grid-cols-[minmax(0,7fr)_minmax(0,5fr)] gap-6 items-start">
+            {/* Левая колонка: видео и таймлайн */}
+            <section className="lg:sticky lg:top-4">
+              <div className="panel p-3">
+                <video
+                  ref={videoRef}
+                  src={videoUrl}
+                  controls
+                  playsInline
+                  className="w-full rounded-md bg-ink aspect-video"
+                  onLoadedMetadata={(e) => setDuration(e.currentTarget.duration || 0)}
+                  onTimeUpdate={(e) => setCurrent(e.currentTarget.currentTime)}
+                />
+                <EvidenceTimeline
+                  duration={job?.meta?.duration_sec || duration}
+                  current={current}
+                  violations={violations}
+                  activeIndex={activeIndex}
+                  onSelect={selectFinding}
+                  onSeek={seek}
+                />
+                <div className="flex items-center justify-between gap-3 mt-3 flex-wrap">
+                  <div className="min-w-0">
+                    <p className="font-medium truncate">{file.name}</p>
+                    <p className="text-xs text-muted tnum">
+                      {(file.size / 1024 / 1024).toFixed(1)} МБ{duration ? ` · ${formatTime(duration)}` : ""}
+                    </p>
+                  </div>
+                  <div className="flex gap-2">
+                    <label className="btn-ghost text-sm cursor-pointer">
+                      Другое видео
+                      <input
+                        type="file"
+                        accept=".mov,.mp4,video/quicktime,video/mp4"
+                        className="hidden"
+                        disabled={busy}
+                        onChange={(e) => {
+                          const f = e.target.files?.[0];
+                          if (f && isAccepted(f.name)) chooseFile(f);
+                          else if (f) setError(`Файл «${f.name}» не подходит: нужен .mov или .mp4.`);
+                          e.target.value = "";
+                        }}
+                      />
+                    </label>
+                    <button className="btn-primary" onClick={analyze} disabled={busy}>
+                      {busy ? "Идёт анализ…" : done || job?.status === "failed" ? "Проверить снова" : "Начать анализ"}
+                    </button>
+                  </div>
+                </div>
               </div>
-            )}
+            </section>
 
-            {/* Meta info */}
-            <div className="glass-card rounded-2xl p-4 mt-4 flex items-center justify-between text-sm text-graphite-400">
-              <span>Job ID: <code className="font-mono text-graphite-600">{result.job_id}</code></span>
-              <span>Время обработки: <strong className="text-graphite-600">{Math.round(elapsed)}с</strong></span>
-            </div>
+            {/* Правая колонка: статус, вердикт, находки */}
+            <section className="space-y-4" aria-live="polite">
+              {error && (
+                <div className="panel p-4 border-alert/40">
+                  <p className="font-semibold text-alert">Анализ не выполнен</p>
+                  <p className="text-sm mt-1">{error}</p>
+                </div>
+              )}
+
+              {!job && !error && !busy && (
+                <div className="panel p-5">
+                  <p className="font-semibold">Видео готово к проверке</p>
+                  <p className="text-sm text-muted mt-1">
+                    Нажмите «Начать анализ». Результат появится здесь, а найденные моменты — отметками на таймлайне под
+                    видео.
+                  </p>
+                </div>
+              )}
+
+              {busy && <ProcessingPanel job={job} elapsed={elapsed} />}
+
+              {job?.status === "failed" && (
+                <div className="panel p-5 border-alert/40">
+                  <p className="font-semibold text-alert">Не удалось обработать видео</p>
+                  <p className="text-sm mt-1 break-words">{job.error || "Неизвестная ошибка сервера."}</p>
+                  <p className="text-sm text-muted mt-2">Проверьте статус модели в шапке и запустите анализ снова.</p>
+                </div>
+              )}
+
+              {done && job && (
+                <>
+                  <Verdict job={job} onExport={exportJson} />
+                  {violations.map((v, i) => (
+                    <FindingCard
+                      key={i}
+                      v={v}
+                      index={i}
+                      active={activeIndex === i}
+                      onSeek={(t) => {
+                        setActiveIndex(i);
+                        seek(t);
+                      }}
+                      onOpenFrame={setModalFrame}
+                    />
+                  ))}
+                </>
+              )}
+            </section>
           </div>
         )}
       </main>
 
-      {/* Footer */}
-      <footer className="text-center py-6 text-sm text-graphite-400">
-        <p>
-          CashGuard © 2026 • ForteBank Datathon 26 •{" "}
-          <span className="text-forte-primary font-medium">
-            Qwen2.5-VL-7B-Instruct
-          </span>
-        </p>
+      <footer className="text-xs text-muted text-center py-5">
+        CashGuard · ForteBank Datathon 26 · Qwen2.5-VL-7B-Instruct + LoRA, работает локально
       </footer>
     </div>
   );

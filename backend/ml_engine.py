@@ -1,353 +1,390 @@
 """
-ML-движок: интеграция с локальной VLM (Qwen2.5-VL-7B-Instruct),
-формирование промптов из rules_kb.json, парсинг ответов,
-Temporal NMS / дедупликация нарушений.
+ML-движок: локальная VLM (Qwen2.5-VL-7B-Instruct, дообученная LoRA) через
+OpenAI-совместимый API vLLM.
+
+Пайплайн:
+  видео → кадры 2 FPS → скользящие окна → VLM по каждому окну (параллельно)
+  → привязка типа к правилу из rules_kb.json → склейка соседних окон
+  → таймкод → кадры-доказательства → вердикт.
+
+Принципы:
+  * Тип нарушения, пункт и документ берутся только из rules_kb.json.
+    Модель не может выдумать ссылку: неизвестный тип отбрасывается.
+  * Если VLM недоступна — задача завершается ошибкой (failed),
+    а не «пустым» или выдуманным результатом.
 """
 
 from __future__ import annotations
 
+import asyncio
+import difflib
 import json
 import logging
 import re
+import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Callable, Optional
 
 import httpx
 
 from config import (
-    DEV_FALLBACK_ON_VLM_ERROR,
+    FINETUNED_USER_PROMPT,
+    MERGE_GAP_SEC,
+    MOTION_FILTER,
+    PROCESSING_BUDGET_SEC,
+    PROMPT_MODE,
     RULES_KB_PATH,
     VLM_API_KEY,
     VLM_BASE_URL,
+    VLM_CONCURRENCY,
     VLM_MAX_TOKENS,
     VLM_MODEL_NAME,
+    VLM_REQUEST_TIMEOUT_SEC,
     VLM_TEMPERATURE,
-    VLM_TOP_P,
+    WINDOW_SIZE_SEC,
 )
-from video_processor import FrameWindow, extract_evidence_frames, prepare_window_for_vlm
+from video_processor import (
+    FrameWindow,
+    build_sliding_windows,
+    extract_evidence_frames,
+    filter_active_windows,
+    get_video_info,
+    prepare_window_for_vlm,
+    sample_frames,
+)
 
 logger = logging.getLogger(__name__)
 
+ProgressCallback = Callable[[int, int], None]
+
+
 # ────────────────────────────────────────────────────────────────────────
-# Загрузка базы знаний
+# База знаний
 # ────────────────────────────────────────────────────────────────────────
 
-def load_rules_kb(path: Path = RULES_KB_PATH) -> list[dict] | dict:
-    """Загружает базу знаний нормативных актов НБРК."""
+def load_rules_kb(path: Path = RULES_KB_PATH) -> list[dict]:
+    """Загружает базу знаний нормативных актов НБРК (список правил)."""
     with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+        kb = json.load(f)
+    if not isinstance(kb, list):
+        raise ValueError("rules_kb.json должен быть списком правил")
+    return kb
 
 
-def build_system_prompt(kb: list[dict] | dict) -> str:
+def _norm(s: str) -> str:
+    return re.sub(r"[^0-9a-zа-яё]+", " ", s.lower().replace("ё", "е")).strip()
+
+
+def match_rule(raw_type: str, kb: list[dict]) -> Optional[dict]:
     """
-    Формирует системный промпт для VLM из динамической базы знаний.
-    Поддерживает как список правил (новый формат), так и словарь (старый формат).
+    Сопоставляет тип из ответа модели с правилом базы знаний.
+    Порядок: точный код → точное название → нечёткое совпадение (≥ 0.75).
+    Возвращает None, если правило не найдено (такое нарушение отбрасывается).
     """
+    if not raw_type:
+        return None
+    t = raw_type.strip()
+    for r in kb:
+        if t.upper() == r.get("code", "").upper():
+            return r
+    nt = _norm(t)
+    for r in kb:
+        if nt == _norm(r.get("type", "")):
+            return r
+    best, best_score = None, 0.0
+    for r in kb:
+        score = difflib.SequenceMatcher(None, nt, _norm(r.get("type", ""))).ratio()
+        if score > best_score:
+            best, best_score = r, score
+    return best if best_score >= 0.75 else None
+
+
+_TIME_PHRASE = re.compile(
+    r"^\s*(?:на\s+)?\d+(?:[.,]\d+)?\s*(?:-?й|-?ой)?\s*(?:секунд[еуаы]?|сек\.?|с)\b[\s,:—-]*",
+    re.IGNORECASE,
+)
+_SOURCE_TAIL = re.compile(r"\s*Нормативн\w*\s+(?:источник|основани\w*|акт)\s*:.*$", re.IGNORECASE | re.DOTALL)
+
+
+def clean_description(desc: str) -> str:
+    """Убирает из ответа модели время («На 68.0 секунде…») и ссылки на нормативку."""
+    d = _SOURCE_TAIL.sub("", desc or "").strip()
+    d = _TIME_PHRASE.sub("", d).strip()
+    if d:
+        d = d[0].upper() + d[1:]
+        if not d.endswith((".", "!", "?")):
+            d += "."
+    return d
+
+
+# ────────────────────────────────────────────────────────────────────────
+# Промпты
+# ────────────────────────────────────────────────────────────────────────
+
+def build_rules_system_prompt(kb: list[dict]) -> str:
+    """Системный промпт для режима rules (базовая модель без дообучения)."""
     rules_text = ""
+    for r in kb:
+        rules_text += (
+            f"\n### {r.get('type', '')} (`{r.get('code', '')}`)\n"
+            f"  - Визуальные признаки: {r.get('visual_signs', '')}\n"
+            f"  - Условие фиксации: {r.get('confirmation_condition', '')}\n"
+        )
+    return f"""Ты — AI-аудитор кассовой дисциплины банка. Анализируешь кадры с камеры видеонаблюдения кассового узла.
 
-    if isinstance(kb, list):
-        for r in kb:
-            code = r.get("code", "")
-            v_type = r.get("type", "")
-            visual = r.get("visual_signs", "")
-            source = r.get("normative_source", "")
-            condition = r.get("confirmation_condition", "")
-            rules_text += (
-                f"\n### {v_type} (`{code}`)\n"
-                f"  - **Визуальные признаки**: {visual}\n"
-                f"  - **Условие фиксации**: {condition}\n"
-                f"  - **Нормативное основание**: {source}\n"
-            )
-    elif isinstance(kb, dict):
-        for act in kb.get("normative_acts", []):
-            rules_text += f"\n### {act.get('title', '')} — {act.get('full_title', '')}\n"
-            for sec in act.get("key_sections", []):
-                rules_text += f"  - **{sec.get('section', '')}**: {sec.get('summary', '')}\n"
-        for vt in kb.get("violation_types", []):
-            rules_text += (
-                f"  - **{vt.get('name_ru', '')}** (`{vt.get('code', '')}`): {vt.get('description', '')} "
-                f"[Ссылка: {vt.get('normative_ref', '')}]\n"
-            )
+ПРАВИЛА:
+- На каждом кадре есть таймкод "TIME: XX.Xs" — укажи его в timecode_sec для момента нарушения.
+- В поле "type" используй ТОЧНОЕ название типа из списка ниже.
+- В "description" коротко опиши, что видно на кадрах и почему это нарушение. Без домыслов о том, чего не видно.
+- Фиксируй нарушение только если оно явно видно на кадрах.
+- НЕ идентифицируй людей.
+- Отвечай строго JSON без markdown.
 
-    prompt = f"""Ты — AI-аудитор кассовой дисциплины банка. Анализируешь кадры с камеры видеонаблюдения кассового узла.
-
-ВАЖНО:
-- На каждом кадре есть таймкод в формате "TIME: XX.Xs" — используй его для указания точного времени нарушения (timecode_sec).
-- В поле "type" используй ТОЧНОЕ наименование типа нарушения из Базы знаний ниже.
-- В поле "description" подробно опиши, что именно зафиксировано на кадрах, и ОБЯЗАТЕЛЬНО укажи нормативный источник (Постановление НБРК).
-- НЕ идентифицируй лица людей, не указывай имена и личные данные.
-- Отвечай СТРОГО в формате JSON.
-
-## База знаний нормативных требований НБРК:
+## Типы нарушений:
 {rules_text}
 
-## Формат ответа (строго JSON, без markdown-обёртки):
-{{
-  "violations": [
-    {{
-      "type": "Точное название типа нарушения из базы знаний",
-      "timecode_sec": 22.0,
-      "description": "Описание: что видно на кадре и почему это нарушение. Нормативный источник: Постановление Правления НБРК от 29.11.2019 № 231, ..."
-    }}
-  ]
-}}
-
-Если нарушений на кадрах НЕ обнаружено (или идет штатная операция без нарушений), верни:
-{{
-  "violations": []
-}}
-
-Анализируй внимательно каждый кадр:
-- Проверка удостоверения личности клиента до приема денег
-- Полистный или машинный пересчет купюр и проверка подлинности
-- Полнота выдачи денег клиенту и сверка суммы
-- Хранение наличности (открытые деньги/мешки на столе)
-- Присутствие кассира на рабочем месте во время обслуживания
-- Состояние сейфов (закрыта ли дверь, оставлен ли ключ в замке)
-- Входная дверь в кассовое помещение (закрыта ли на замок)
-- Отсутствие посторонних лиц и одновременного обслуживания двух клиентов
-- Отсутствие личных вещей кассира на рабочей поверхности
+## Формат ответа:
+{{"violations": [{{"type": "...", "timecode_sec": 22.0, "description": "..."}}]}}
+Если нарушений нет: {{"violations": []}}
 """
-    return prompt
+
+
+def build_messages(frames: list[dict], window: FrameWindow, kb: list[dict]) -> list[dict]:
+    images = [
+        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{f['image_base64']}"}}
+        for f in frames
+    ]
+    if PROMPT_MODE == "finetuned":
+        # Ровно как в обучающем датасете: без system (шаблон Qwen добавит дефолтный),
+        # текст, затем кадры.
+        return [{"role": "user", "content": [{"type": "text", "text": FINETUNED_USER_PROMPT}, *images]}]
+
+    text = (
+        f"Ниже {len(frames)} кадров с камеры кассового узла "
+        f"(от {frames[0]['timestamp_sec']:.1f}с до {frames[-1]['timestamp_sec']:.1f}с). "
+        "Проанализируй их на наличие нарушений кассовой дисциплины."
+    )
+    return [
+        {"role": "system", "content": build_rules_system_prompt(kb)},
+        {"role": "user", "content": [{"type": "text", "text": text}, *images]},
+    ]
 
 
 # ────────────────────────────────────────────────────────────────────────
 # Вызов VLM
 # ────────────────────────────────────────────────────────────────────────
 
-async def call_vlm(
-    window_frames: list[dict],
-    system_prompt: str,
-    timeout: float = 120.0,
-) -> dict:
-    """
-    Отправляет набор кадров окна в локальную VLM через OpenAI-compatible API.
-    Возвращает распарсенный JSON-ответ.
-    """
-    # Формируем content с изображениями
-    user_content: list[dict] = []
+def parse_vlm_response(raw_text: str) -> dict:
+    """Парсит JSON из ответа VLM, обрабатывая markdown-обёртки."""
+    text = (raw_text or "").strip()
+    m = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
+    if m:
+        text = m.group(1).strip()
+    start, end = text.find("{"), text.rfind("}")
+    if start != -1 and end != -1:
+        text = text[start:end + 1]
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError as e:
+        logger.warning("Не удалось распарсить JSON от VLM: %s | ответ: %s", e, (raw_text or "")[:300])
+        return {"violations": []}
+    if not isinstance(parsed, dict) or not isinstance(parsed.get("violations"), list):
+        return {"violations": []}
+    return parsed
 
-    user_content.append({
-        "type": "text",
-        "text": (
-            f"Ниже {len(window_frames)} кадров с камеры кассового узла "
-            f"(с таймкодами от {window_frames[0]['timestamp_sec']}с "
-            f"до {window_frames[-1]['timestamp_sec']}с). "
-            "Проанализируй их на наличие нарушений кассовой дисциплины."
-        ),
-    })
 
-    for wf in window_frames:
-        user_content.append({
-            "type": "image_url",
-            "image_url": {
-                "url": f"data:image/jpeg;base64,{wf['image_base64']}",
-            },
-        })
-
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_content},
-    ]
-
+async def call_vlm(client: httpx.AsyncClient, messages: list[dict]) -> dict:
     payload = {
         "model": VLM_MODEL_NAME,
         "messages": messages,
         "temperature": VLM_TEMPERATURE,
         "max_tokens": VLM_MAX_TOKENS,
-        "top_p": VLM_TOP_P,
     }
-
-    headers = {
-        "Authorization": f"Bearer {VLM_API_KEY}",
-        "Content-Type": "application/json",
-    }
-
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        resp = await client.post(
-            f"{VLM_BASE_URL}/chat/completions",
-            json=payload,
-            headers=headers,
-        )
-        resp.raise_for_status()
-
-    data = resp.json()
-    raw_text = data["choices"][0]["message"]["content"]
-    return parse_vlm_response(raw_text)
+    resp = await client.post(
+        f"{VLM_BASE_URL}/chat/completions",
+        json=payload,
+        headers={"Authorization": f"Bearer {VLM_API_KEY}"},
+    )
+    resp.raise_for_status()
+    raw = resp.json()["choices"][0]["message"]["content"]
+    return parse_vlm_response(raw)
 
 
-def parse_vlm_response(raw_text: str) -> dict:
-    """Парсит JSON из ответа VLM, обрабатывая markdown-обёртки."""
-    text = raw_text.strip()
-
-    # Убираем ```json ... ``` обёртку, если есть
-    json_match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
-    if json_match:
-        text = json_match.group(1).strip()
-
-    # Пробуем найти JSON-объект
-    brace_start = text.find("{")
-    brace_end = text.rfind("}")
-    if brace_start != -1 and brace_end != -1:
-        text = text[brace_start:brace_end + 1]
-
+async def check_vlm() -> dict:
+    """Проверка доступности VLM-сервера (для /health и UI)."""
     try:
-        parsed = json.loads(text)
-    except json.JSONDecodeError as e:
-        logger.warning("Не удалось распарсить JSON от VLM: %s\nОтвет: %s", e, raw_text[:500])
-        return {"violations": []}
-
-    if "violations" not in parsed:
-        parsed["violations"] = []
-
-    return parsed
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.get(f"{VLM_BASE_URL}/models", headers={"Authorization": f"Bearer {VLM_API_KEY}"})
+            r.raise_for_status()
+            models = [m.get("id") for m in r.json().get("data", [])]
+            return {"ok": VLM_MODEL_NAME in models, "models": models}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
 
 
 # ────────────────────────────────────────────────────────────────────────
-# Temporal NMS / дедупликация
+# Детекции → события
 # ────────────────────────────────────────────────────────────────────────
 
-def temporal_nms(
-    violations: list[dict],
-    time_threshold_sec: float = 5.0,
-) -> list[dict]:
-    """
-    Дедупликация нарушений: если одно и то же нарушение обнаружено
-    в нескольких перекрывающихся окнах (с разницей < time_threshold_sec),
-    оставляем только одно (с наибольшей уверенностью / первое по времени).
-    """
-    if not violations:
-        return []
-
-    # Сортируем по типу + времени
-    sorted_v = sorted(violations, key=lambda v: (v.get("type", ""), v.get("timecode_sec", 0)))
-
-    merged: list[dict] = []
-    for v in sorted_v:
-        duplicate = False
-        for m in merged:
-            if (
-                m.get("type") == v.get("type")
-                and abs(m.get("timecode_sec", 0) - v.get("timecode_sec", 0)) < time_threshold_sec
-            ):
-                duplicate = True
-                # Если описание нового длиннее/полнее — заменяем
-                if len(v.get("description", "")) > len(m.get("description", "")):
-                    m["description"] = v["description"]
-                break
-        if not duplicate:
-            merged.append(v)
-
-    return merged
+@dataclass
+class Detection:
+    rule: dict
+    timecode_sec: float
+    description: str
+    window: FrameWindow
 
 
-# ────────────────────────────────────────────────────────────────────────
-# Полный пайплайн анализа видео
-# ────────────────────────────────────────────────────────────────────────
-
-async def analyze_video(video_path: str | Path) -> dict:
-    """
-    Полный пайплайн: видео → кадры → окна → VLM → NMS → результат.
-    Возвращает dict, совместимый со спецификацией API.
-    """
-    from video_processor import (
-        build_sliding_windows,
-        filter_active_windows,
-        sample_frames,
-    )
-
-    video_path = Path(video_path)
-    logger.info("Начинаю анализ видео: %s", video_path.name)
-
-    # 1. Загружаем базу знаний и формируем промпт
-    kb = load_rules_kb()
-    system_prompt = build_system_prompt(kb)
-
-    # 2. Сэмплируем кадры
-    frames = sample_frames(video_path)
-    logger.info("Сэмплировано %d кадров", len(frames))
-
-    # 3. Строим скользящие окна и применяем Cascade Fast Filter (Уровень 1)
-    raw_windows = build_sliding_windows(frames)
-    active_windows_with_scores = filter_active_windows(raw_windows)
-    windows = [w for w, _ in active_windows_with_scores]
-    logger.info(
-        "Создано %d скользящих окон. Cascade Fast Filter отобрал %d активных окон для VLM (отсечено %d статичных)",
-        len(raw_windows), len(windows), len(raw_windows) - len(windows),
-    )
-
-    # 4. Прогоняем активные окна через VLM (Уровень 2)
-    all_violations: list[dict] = []
-    vlm_success_count = 0
-
-    for i, window in enumerate(windows):
-        logger.info(
-            "Обработка окна %d/%d (%.1fs – %.1fs)",
-            i + 1, len(windows), window.start_sec, window.end_sec,
-        )
-        vlm_frames = prepare_window_for_vlm(window)
-        try:
-            result = await call_vlm(vlm_frames, system_prompt)
-            vlm_success_count += 1
-            window_violations = result.get("violations", [])
-
-            # Валидируем и нормализуем каждое нарушение
-            for v in window_violations:
-                if "type" in v and "timecode_sec" in v:
-                    try:
-                        v["timecode_sec"] = float(v["timecode_sec"])
-                    except (ValueError, TypeError):
-                        v["timecode_sec"] = window.start_sec
-                    all_violations.append(v)
-
-        except Exception as exc:
-            logger.error("Ошибка VLM на окне %d: %s", i + 1, exc)
+def detections_from_window(result: dict, window: FrameWindow, kb: list[dict], duration: float) -> list[Detection]:
+    out: list[Detection] = []
+    center = min(duration, (window.start_sec + window.end_sec) / 2)
+    for v in result.get("violations", []):
+        if not isinstance(v, dict):
             continue
+        rule = match_rule(str(v.get("type", "")), kb)
+        if rule is None:
+            logger.info("Отброшен тип вне базы знаний: %r", v.get("type"))
+            continue
+        tc = center
+        if PROMPT_MODE != "finetuned":
+            # В режиме rules модель видит таймкод на кадрах; доверяем, если он внутри окна
+            try:
+                model_tc = float(v.get("timecode_sec"))
+                if window.start_sec - 0.5 <= model_tc <= window.end_sec + 0.5:
+                    tc = model_tc
+            except (TypeError, ValueError):
+                pass
+        out.append(Detection(rule, round(tc, 1), clean_description(str(v.get("description", ""))), window))
+    return out
 
-    # Если VLM был недоступен (например, локальный запуск на слабом ПК без GPU)
-    if vlm_success_count == 0 and windows and DEV_FALLBACK_ON_VLM_ERROR:
-        logger.warning(
-            "⚠️ VLM-сервер недоступен (%s). Включён режим DEV_FALLBACK для сквозного тестирования UI и кадров.",
-            VLM_BASE_URL,
+
+def merge_detections(dets: list[Detection], gap_sec: float = MERGE_GAP_SEC) -> list[dict]:
+    """
+    Склеивает одно и то же нарушение из соседних (перекрывающихся) окон.
+    Таймкод события = середина серии окон, где модель его видела.
+    """
+    events: list[dict] = []
+    by_code: dict[str, list[Detection]] = {}
+    for d in dets:
+        by_code.setdefault(d.rule["code"], []).append(d)
+
+    for code, items in by_code.items():
+        items.sort(key=lambda d: d.timecode_sec)
+        cluster = [items[0]]
+        clusters = []
+        for d in items[1:]:
+            if d.timecode_sec - cluster[-1].timecode_sec <= gap_sec:
+                cluster.append(d)
+            else:
+                clusters.append(cluster)
+                cluster = [d]
+        clusters.append(cluster)
+
+        for c in clusters:
+            tc = round((c[0].timecode_sec + c[-1].timecode_sec) / 2, 1)
+            # Описание — из окна, ближайшего к итоговому таймкоду
+            best = min(c, key=lambda d: abs(d.timecode_sec - tc))
+            desc = best.description or max((d.description for d in c), key=len, default="")
+            rule = c[0].rule
+            events.append({
+                "type": rule["type"],
+                "timecode_sec": tc,
+                "description": (
+                    f"{desc} Нормативный источник: {rule['normative_source']}."
+                    if desc else f"{rule['visual_signs']} Нормативный источник: {rule['normative_source']}."
+                ),
+                # Дополнительные поля (сверх схемы ТЗ) — для UI
+                "rule_code": code,
+                "normative_source": rule["normative_source"],
+                "observation": desc,
+                "windows_count": len(c),
+                "time_range_sec": [c[0].window.start_sec, c[-1].window.end_sec],
+            })
+
+    events.sort(key=lambda e: e["timecode_sec"])
+    return events
+
+
+# ────────────────────────────────────────────────────────────────────────
+# Полный пайплайн
+# ────────────────────────────────────────────────────────────────────────
+
+async def analyze_video(video_path: str | Path, progress: Optional[ProgressCallback] = None) -> dict:
+    """
+    Видео → кадры → окна → VLM (параллельно, с бюджетом времени) → события.
+    Возвращает dict, совместимый со схемой API.
+    """
+    t0 = time.monotonic()
+    video_path = Path(video_path)
+    kb = load_rules_kb()
+    info = get_video_info(video_path)
+    duration = info["duration_sec"]
+
+    frames = await asyncio.to_thread(sample_frames, video_path)
+    windows = build_sliding_windows(frames)
+    if MOTION_FILTER:
+        windows = [w for w, _ in filter_active_windows(windows)]
+    total = len(windows)
+    logger.info("Видео %.1f с, кадров %d, окон %d, режим %s", duration, len(frames), total, PROMPT_MODE)
+    if total == 0:
+        raise RuntimeError("Не удалось извлечь кадры из видео")
+
+    done = 0
+    ok = 0
+    errors: list[str] = []
+    detections: list[Detection] = []
+    sem = asyncio.Semaphore(VLM_CONCURRENCY)
+
+    async def run_window(client: httpx.AsyncClient, w: FrameWindow) -> None:
+        nonlocal done, ok
+        async with sem:
+            try:
+                vlm_frames = await asyncio.to_thread(prepare_window_for_vlm, w)
+                result = await call_vlm(client, build_messages(vlm_frames, w, kb))
+                detections.extend(detections_from_window(result, w, kb, duration))
+                ok += 1
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{type(exc).__name__}: {exc}")
+                logger.error("Ошибка VLM на окне %.1f–%.1f: %s", w.start_sec, w.end_sec, exc)
+            finally:
+                done += 1
+                if progress:
+                    progress(done, total)
+
+    budget = max(10.0, PROCESSING_BUDGET_SEC - (time.monotonic() - t0))
+    async with httpx.AsyncClient(timeout=VLM_REQUEST_TIMEOUT_SEC) as client:
+        tasks = [asyncio.create_task(run_window(client, w)) for w in windows]
+        finished, pending = await asyncio.wait(tasks, timeout=budget)
+        for t in pending:
+            t.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+            logger.warning("Бюджет времени исчерпан: не обработано %d из %d окон", len(pending), total)
+
+    if ok == 0:
+        raise RuntimeError(
+            "VLM-сервер не ответил ни на одно окно — результат не может быть получен. "
+            + (errors[0] if errors else "")
         )
-        mid_time = round((windows[0].start_sec + windows[-1].end_sec) / 2.0, 1)
-        if isinstance(kb, list) and kb:
-            # Выбираем релевантное правило из новой базы знаний
-            rule = kb[3] if len(kb) > 3 else kb[0]
-            all_violations.append({
-                "type": rule.get("type", "Оставление наличных денег или инкассаторской сумки на рабочем столе без присмотра"),
-                "timecode_sec": mid_time,
-                "description": (
-                    f"На {mid_time:.1f}с зафиксировано: {rule.get('visual_signs', '')} "
-                    f"Нормативный источник: {rule.get('normative_source', 'Постановление Правления НБРК от 29.11.2019 № 231')}."
-                ),
-            })
-        else:
-            all_violations.append({
-                "type": "Оставление наличных денег или инкассаторской сумки на рабочем столе без присмотра",
-                "timecode_sec": mid_time,
-                "description": (
-                    "Обнаружены денежные средства на столе кассира при отсутствии сотрудника на рабочем месте. "
-                    "Нормативный источник: Постановление Правления НБРК от 29.11.2019 № 231, п. 20."
-                ),
-            })
 
-    # 5. Temporal NMS
-    merged = temporal_nms(all_violations)
-    logger.info("После NMS: %d нарушений", len(merged))
-
-    # 6. Извлекаем evidence frames для каждого нарушения
-    for v in merged:
-        tc = v.get("timecode_sec", 0)
+    events = merge_detections(detections)
+    for e in events:
         try:
-            v["evidence_frames"] = extract_evidence_frames(video_path, tc)
-        except Exception as exc:
-            logger.warning("Не удалось извлечь evidence frames для t=%.1fs: %s", tc, exc)
-            v["evidence_frames"] = []
+            e["evidence_frames"] = await asyncio.to_thread(extract_evidence_frames, video_path, e["timecode_sec"])
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Нет кадров-доказательств для t=%.1f: %s", e["timecode_sec"], exc)
+            e["evidence_frames"] = []
 
-    # 7. Формируем финальный результат
-    verdict = "violation" if merged else "no_violation"
     return {
-        "verdict": verdict,
-        "violations": merged,
+        "verdict": "violation" if events else "no_violation",
+        "violations": events,
+        "meta": {
+            "duration_sec": duration,
+            "windows_total": total,
+            "windows_analyzed": ok,
+            "windows_failed": total - ok,
+            "prompt_mode": PROMPT_MODE,
+            "window_size_sec": WINDOW_SIZE_SEC,
+            "processing_time_sec": round(time.monotonic() - t0, 1),
+        },
     }
