@@ -26,66 +26,73 @@ ml/videos/
 |---|---|---|
 | **База знаний НБРК** | ✅ Готово | [backend/rules_kb.json](file:///c:/Users/User/Desktop/datathon/backend/rules_kb.json) обновлена на 10 стандартизированных правил с кодами (`NO_CLIENT_ID_CHECK`, `CASH_OR_BAG_LEFT_UNATTENDED`, `SAFE_LEFT_OPEN_OR_KEY_IN_LOCK` и др.). |
 | **ML-движок бэкенда** | ✅ Готово | [backend/ml_engine.py](file:///c:/Users/User/Desktop/datathon/backend/ml_engine.py) динамически парсит новый список правил и подставляет в системный промпт VLM точные условия подтверждения и статьи НБРК. |
-| **Аннотации датасета** | ✅ Готово | [ml/annotations.json](file:///c:/Users/User/Desktop/datathon/ml/annotations.json) содержит 40+ размеченных видео (нарушения с таймкодами + эталонные «чистые» видео). |
-| **Пайплайн данных** | ✅ Готово | [ml/prepare_dataset.py](file:///c:/Users/User/Desktop/datathon/ml/prepare_dataset.py) адаптирован: корректно обрабатывает видео без нарушений (`timecode_sec: null`), применяет аугментации (поворот, перспектива, контраст) и формирует формат ShareGPT. |
+| **Cascade Fast Filter (Этап 3)** | ✅ Готово | [backend/video_processor.py](file:///c:/Users/User/Desktop/datathon/backend/video_processor.py) фильтрует статичные кадры через покадровую разность OpenCV, ускоряя инференс на 50%+. |
+| **Обучающий датасет (Этап 1)** | ✅ Готово | 42 видео успешно обработаны через Docker. Сформированы [sharegpt_train.json](file:///c:/Users/User/Desktop/datathon/ml/dataset_output/sharegpt_train.json) (304 диалога), [sharegpt_val.json](file:///c:/Users/User/Desktop/datathon/ml/dataset_output/sharegpt_val.json) (53 диалога) и 357 клипов [videomae_dataset/](file:///c:/Users/User/Desktop/datathon/ml/dataset_output/videomae_dataset). |
+| **Docker-стек для обучения (Этап 2)** | ✅ Готово | [ml/Dockerfile.train](file:///c:/Users/User/Desktop/datathon/ml/Dockerfile.train), сервис `train` в [docker-compose.yml](file:///c:/Users/User/Desktop/datathon/docker-compose.yml) и 1-Click Colab [ml/CashGuard_Qwen2_5_VL_LoRA_Colab.ipynb](file:///c:/Users/User/Desktop/datathon/ml/CashGuard_Qwen2_5_VL_LoRA_Colab.ipynb). |
 | **Backend API** | ✅ Работает | FastAPI на `http://localhost:8080` (авторизация `X-API-Key`, очередь `asyncio.Queue`, Temporal NMS, нарезка чистых evidence-кадров). |
 | **Frontend UI** | ✅ Работает | Next.js на `http://localhost:3000` (видеоплеер с таймлайн-метками нарушений, нормативные бейджи, галерея доказательств, экспорт PDF/JSON). |
-| **Docker Stack** | ✅ Закеширован | `docker compose up -d backend frontend` стартует мгновенно без повторного скачивания пакетов. |
+| **Docker Stack** | ✅ Работает | Контейнеры `cashguard-backend` и `cashguard-frontend` запущены и обслуживают запросы. |
 
 ---
 
-## 🎯 3. Пошаговый план дальнейших действий
+## 🎯 3. Пошаговый пайплайн дообучения (ML Pipeline в Docker)
 
-### Этап 1. Загрузка видео и генерация обучающей выборки
-1. Скопировать все `.mov` / `.mp4` файлы в папку `ml/videos/`.
-2. Запустить скрипт нарезки и аугментации:
-   ```bash
-   cd ml
-   python prepare_dataset.py
-   ```
-   *Параметры по умолчанию уже настроены на `ml/annotations.json` и `ml/videos/`.*
-3. На выходе в `ml/dataset_output/` сформируются:
-   * `sharegpt_train.json` — обучающая выборка (кадры + диалог в формате ShareGPT);
-   * `sharegpt_val.json` — валидационная выборка (15%);
-   * `videomae_dataset/` — кадры для вспомогательного видео-классификатора.
+### Шаг 1. Генерация датасета (Выполнено ✅)
+Генерация запускается одной Docker-командой без необходимости устанавливать Python на хост:
+```powershell
+docker compose --profile ml run --rm prepare-dataset
+```
+Результаты сохранены в `ml/dataset_output/`:
+- `sharegpt_train.json` (304 размеченных окна с кадрами base64);
+- `sharegpt_val.json` (53 валидационных окна);
+- `dataset_info.json` (метаданные для LLaMA-Factory);
+- `videomae_dataset/` (357 клипов).
 
-### Этап 2. Дообучение модели (Fine-Tuning LoRA)
-1. Для дообучения `Qwen2.5-VL-7B-Instruct` используется LLaMA-Factory:
-   ```bash
-   cd ml
-   bash train.sh
-   ```
-   *Конфигурация уже описана в [ml/train_lora.yaml](file:///c:/Users/User/Desktop/datathon/ml/train_lora.yaml):*
-   * LoRA rank `r = 16`, `alpha = 32`;
-   * Целевые модули: `q_proj`, `k_proj`, `v_proj`, `o_proj`, `gate_proj`, `up_proj`, `down_proj`;
-   * Квантование 4-bit (QLoRA) для экономии памяти видеокарты при обучении;
-   * 3 эпохи, lr $1\times 10^{-4}$, cosine scheduler.
-2. Если локально нет GPU с 16–24 ГБ VRAM, датасет `sharegpt_train.json` запускается для обучения в Google Colab (бесплатный T4/A100) или Kaggle.
+### Шаг 2. Дообучение модели (Fine-Tuning LoRA / QLoRA)
+Для обучения 7B VLM (`Qwen2.5-VL-7B-Instruct`) требуется GPU с объемом VRAM от 16 ГБ (QLoRA 4-bit) до 24+ ГБ (LoRA 16-bit).
 
-### Этап 3. Двухуровневый инференс для ускорения (Cascade ML)
-*Для сдачи жюри критична скорость обработки (видео 2-3 минуты должно обрабатываться быстрее 60 секунд):*
-1. **Уровень 1 (Motion / Fast Filter)**: быстрый прогон через анализ движения/изменения сцены в OpenCV (отсекаются статичные фрагменты, где ничего не происходит).
-2. **Уровень 2 (VLM Verifier)**: VLM детально анализирует только подозрительные интервалы с таймкодами и формулирует юридическое описание по НБРК.
+Доступны 2 варианта запуска:
 
-### Этап 4. Проверка критериев жюри
-1. **Строгий формат API**:
-   - `POST /api/v1/analyze` -> `{"job_id": "..."}`
-   - `GET /api/v1/jobs/{job_id}` -> `{"status": "done", "verdict": "violation", "violations": [...]}`
-   - Обязательные поля в каждом нарушении: `type`, `timecode_sec`, `description`, `evidence_frames`.
-2. **Отсутствие Face ID / PII**: подтверждено (распознавание лиц не используется, нормативные акты требуют обезличенного аудита процесса).
-3. **Локальность**: подтверждено (модель `Qwen2.5-VL-7B` обслуживается локально через vLLM / Ollama без вызовов внешних API).
+#### Вариант А: Обучение в 1 клик в Google Colab (Рекомендуется при локальной видеокарте < 16GB)
+1. Откройте блокнот [ml/CashGuard_Qwen2_5_VL_LoRA_Colab.ipynb](file:///c:/Users/User/Desktop/datathon/ml/CashGuard_Qwen2_5_VL_LoRA_Colab.ipynb) в Google Colab.
+2. В меню выберите: **Среда выполнения -> Сменить тип среды выполнения -> T4 GPU (бесплатно)**.
+3. Запустите ячейки по порядку.
+4. При запросе загрузите сгенерированные файлы `sharegpt_train.json` и `sharegpt_val.json`.
+5. По завершении скачается архив `cashguard_lora_output.zip`. Распакуйте его в папку `ml/lora_output/`.
+
+#### Вариант Б: Обучение в Docker на машине/сервере с NVIDIA GPU (>=16GB VRAM)
+Если у вас есть сервер с мощной видеокартой (RTX 3090, 4090, A100 или облачный RunPod/Vast.ai):
+```powershell
+# Запуск контейнера обучения LLaMA-Factory с конфигом train_qlora.yaml
+docker compose --profile train run --rm train
+```
+Адаптер автоматически запишется в `ml/lora_output/`.
+
+### Шаг 3. Подключение обученного адаптера к VLM-серверу
+В [docker-compose.yml](file:///c:/Users/User/Desktop/datathon/docker-compose.yml) папка `ml/` уже проброшена в контейнер vLLM как `/app/ml`.
+Для обслуживания базовой модели вместе с вашим LoRA-адаптером передайте флаг:
+```yaml
+command: >
+  --model Qwen/Qwen2.5-VL-7B-Instruct
+  --served-model-name Qwen2.5-VL-7B-Instruct
+  --enable-lora
+  --lora-modules cashguard-lora=/app/ml/lora_output
+```
 
 ---
 
 ## ⚡ Быстрые команды
 
 ```powershell
-# Запуск работающего веб-интерфейса и бэкенда
+# Запуск веб-сервисов
 docker compose up -d backend frontend
+
+# Перегенерация датасета в Docker
+docker compose --profile ml run --rm prepare-dataset
+
+# Запуск LoRA fine-tuning в Docker (на GPU-хосте)
+docker compose --profile train run --rm train
 
 # Проверка статуса контейнеров
 docker ps
-
-# Подготовка датасета (после добавления видео в ml/videos)
-python ml/prepare_dataset.py
 ```

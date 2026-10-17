@@ -18,6 +18,7 @@ import base64
 import json
 import os
 import random
+import re
 import sys
 from pathlib import Path
 from typing import List
@@ -273,6 +274,10 @@ def resolve_video_file(videos_dir: Path | str, target_name: str) -> Path | None:
         # Совпадение имени без расширения (например, .mov vs .mp4)
         if normalize_name(f.stem) == target_stem and f.suffix.lower() in ('.mov', '.mp4', '.avi', '.mkv'):
             return f
+        # Совпадение с очисткой от суффиксов копий, например "Х-3 (1).mov"
+        clean_stem = re.sub(r"\s*\(\d+\)$", "", normalize_name(f.stem))
+        if clean_stem == target_stem and f.suffix.lower() in ('.mov', '.mp4', '.avi', '.mkv'):
+            return f
 
     return None
 
@@ -392,15 +397,44 @@ def main():
     # Сохраняем ShareGPT
     train_path = output / "sharegpt_train.json"
     val_path = output / "sharegpt_val.json"
+    info_path = output / "dataset_info.json"
 
     with open(train_path, "w", encoding="utf-8") as f:
         json.dump(train_data, f, ensure_ascii=False, indent=2)
     with open(val_path, "w", encoding="utf-8") as f:
         json.dump(val_data, f, ensure_ascii=False, indent=2)
 
+    dataset_info = {
+        "sharegpt_train": {
+            "file_name": "sharegpt_train.json",
+            "formatting": "sharegpt",
+            "columns": {"messages": "conversations"},
+            "tags": {
+                "role_tag": "from",
+                "content_tag": "value",
+                "user_tag": "human",
+                "assistant_tag": "gpt",
+            },
+        },
+        "sharegpt_val": {
+            "file_name": "sharegpt_val.json",
+            "formatting": "sharegpt",
+            "columns": {"messages": "conversations"},
+            "tags": {
+                "role_tag": "from",
+                "content_tag": "value",
+                "user_tag": "human",
+                "assistant_tag": "gpt",
+            },
+        },
+    }
+    with open(info_path, "w", encoding="utf-8") as f:
+        json.dump(dataset_info, f, ensure_ascii=False, indent=2)
+
     print(f"\n✅ Датасет готов:")
     print(f"  ShareGPT train: {len(train_data)} записей → {train_path}")
     print(f"  ShareGPT val:   {len(val_data)} записей → {val_path}")
+    print(f"  Dataset info:   {info_path}")
     print(f"  VideoMAE:       {videomae_dir}")
     print(f"  Всего клипов:   {clip_counter}")
 

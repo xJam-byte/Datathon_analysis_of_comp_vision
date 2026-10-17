@@ -252,6 +252,7 @@ async def analyze_video(video_path: str | Path) -> dict:
     """
     from video_processor import (
         build_sliding_windows,
+        filter_active_windows,
         sample_frames,
     )
 
@@ -266,11 +267,16 @@ async def analyze_video(video_path: str | Path) -> dict:
     frames = sample_frames(video_path)
     logger.info("Сэмплировано %d кадров", len(frames))
 
-    # 3. Строим скользящие окна
-    windows = build_sliding_windows(frames)
-    logger.info("Создано %d скользящих окон", len(windows))
+    # 3. Строим скользящие окна и применяем Cascade Fast Filter (Уровень 1)
+    raw_windows = build_sliding_windows(frames)
+    active_windows_with_scores = filter_active_windows(raw_windows)
+    windows = [w for w, _ in active_windows_with_scores]
+    logger.info(
+        "Создано %d скользящих окон. Cascade Fast Filter отобрал %d активных окон для VLM (отсечено %d статичных)",
+        len(raw_windows), len(windows), len(raw_windows) - len(windows),
+    )
 
-    # 4. Прогоняем каждое окно через VLM
+    # 4. Прогоняем активные окна через VLM (Уровень 2)
     all_violations: list[dict] = []
     vlm_success_count = 0
 

@@ -22,32 +22,30 @@ if ! python -c "import llamafactory" &>/dev/null; then
     pip install "llamafactory[torch,metrics]>=0.9.0"
 fi
 
-# ── 2. Подготовка датасета (если аннотации есть) ─────────────────────
-ANNOTATIONS="${1:-./annotations.json}"
-VIDEOS_DIR="${2:-./videos}"
+# ── 2. Проверка датасета ──────────────────────────────────────────────
+CONFIG="${1:-train_qlora.yaml}"
 OUTPUT_DIR="./dataset_output"
 
-if [ -f "$ANNOTATIONS" ] && [ -d "$VIDEOS_DIR" ]; then
+if [ -f "$OUTPUT_DIR/sharegpt_train.json" ]; then
+    echo "✔ Обучающий датасет найден в $OUTPUT_DIR"
+elif [ -f "./annotations.json" ] && [ -d "./videos" ]; then
     echo ""
-    echo "📊 Подготовка датасета..."
+    echo "📊 Подготовка датасета из видео..."
     python prepare_dataset.py \
-        --annotations "$ANNOTATIONS" \
-        --videos-dir "$VIDEOS_DIR" \
+        --annotations "./annotations.json" \
+        --videos-dir "./videos" \
         --output-dir "$OUTPUT_DIR" \
         --neg-per-video 3 \
         --augment-copies 2 \
         --val-ratio 0.15
 else
-    echo "⚠ Аннотации ($ANNOTATIONS) или видео ($VIDEOS_DIR) не найдены."
-    echo "  Пропускаю подготовку датасета. Используйте существующий датасет."
-    if [ ! -d "$OUTPUT_DIR" ]; then
-        echo "❌ Датасет не найден в $OUTPUT_DIR. Сначала подготовьте данные."
-        exit 1
-    fi
+    echo "❌ Датасет не найден в $OUTPUT_DIR и отсутствуют видео для подготовки."
+    exit 1
 fi
 
 # ── 3. Регистрируем датасет для LLaMA-Factory ───────────────────────
 DATASET_INFO="$OUTPUT_DIR/dataset_info.json"
+if [ ! -f "$DATASET_INFO" ]; then
 cat > "$DATASET_INFO" <<EOF
 {
   "sharegpt_train": {
@@ -78,15 +76,16 @@ cat > "$DATASET_INFO" <<EOF
   }
 }
 EOF
+fi
 
 echo ""
-echo "🚀 Запуск LoRA fine-tuning..."
-echo "   Конфиг: train_lora.yaml"
+echo "🚀 Запуск fine-tuning..."
+echo "   Конфиг: $CONFIG"
 echo "   Датасет: $OUTPUT_DIR"
 echo ""
 
 # ── 4. Запуск обучения ──────────────────────────────────────────────
-llamafactory-cli train train_lora.yaml
+llamafactory-cli train "$CONFIG"
 
 echo ""
 echo "═══════════════════════════════════════════════════"

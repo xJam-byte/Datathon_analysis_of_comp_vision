@@ -18,6 +18,7 @@ services:
       - NVIDIA_VISIBLE_DEVICES=all
     volumes:
       - vlm-cache:/root/.cache/huggingface
+      - ./ml:/app/ml:ro
     command: >
       --model Qwen/Qwen2.5-VL-7B-Instruct
       --served-model-name Qwen2.5-VL-7B-Instruct
@@ -43,6 +44,44 @@ services:
       retries: 10
       start_period: 120s
     restart: "no"
+
+  # ─── Подготовка датасета в Docker ───────────────────────────────────
+  prepare-dataset:
+    profiles: ["ml"]
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: cashguard-prepare-dataset
+    volumes:
+      - ./ml:/workspace/ml
+    working_dir: /workspace
+    command: >
+      python ml/prepare_dataset.py
+      --annotations ml/annotations.json
+      --videos-dir ml/videos
+      --output-dir ml/dataset_output
+
+  # ─── Fine-Tuning LoRA (LLaMA-Factory) в Docker ───────────────────────
+  train:
+    profiles: ["train"]
+    build:
+      context: .
+      dockerfile: ml/Dockerfile.train
+    container_name: cashguard-train
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+    volumes:
+      - ./ml:/app/ml
+      - vlm-cache:/root/.cache/huggingface
+    command: ["bash", "train.sh", "train_qlora.yaml"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
 
   # ─── Backend API ────────────────────────────────────────────────────
   backend:

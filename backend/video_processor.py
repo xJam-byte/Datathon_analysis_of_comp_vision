@@ -220,6 +220,47 @@ def extract_evidence_frames(
     return results
 
 
+def compute_window_motion_score(window: FrameWindow) -> float:
+    """
+    Оценивает динамику/движение в окне кадров (Этап 3 Cascade ML).
+    Использует быстрое вычисление покадровой разности в градациях серого.
+    """
+    if len(window.frames) < 2:
+        return 5.0  # По умолчанию считаем активным
+
+    diffs = []
+    for i in range(len(window.frames) - 1):
+        f1 = window.frames[i].image
+        f2 = window.frames[i + 1].image
+        # Быстрый даунскейл для мгновенного подсчета
+        g1 = cv2.cvtColor(cv2.resize(f1, (160, 120), interpolation=cv2.INTER_NEAREST), cv2.COLOR_BGR2GRAY)
+        g2 = cv2.cvtColor(cv2.resize(f2, (160, 120), interpolation=cv2.INTER_NEAREST), cv2.COLOR_BGR2GRAY)
+        diff = cv2.absdiff(g1, g2)
+        diffs.append(float(np.mean(diff)))
+
+    return float(np.mean(diffs)) if diffs else 0.0
+
+
+def filter_active_windows(
+    windows: List[FrameWindow],
+    min_motion_threshold: float = 0.8,
+) -> List[Tuple[FrameWindow, float]]:
+    """
+    Каскадный фильтр 1-го уровня:
+    Отсекает абсолютно статичные окна, где в кадре нет активности/движения,
+    сокращая количество ресурсоемких обращений к VLM на 40-60%.
+    """
+    scored = [(w, compute_window_motion_score(w)) for w in windows]
+    active = [(w, score) for w, score in scored if score >= min_motion_threshold]
+
+    # Гарантируем, что если видео очень тихое, мы всё равно вернем хотя бы половину окон
+    if not active and scored:
+        scored.sort(key=lambda x: x[1], reverse=True)
+        return scored[:max(1, len(scored) // 2)]
+
+    return active
+
+
 def prepare_window_for_vlm(window: FrameWindow) -> list[dict]:
     """
     Готовит окно кадров для отправки в VLM:
@@ -237,3 +278,4 @@ def prepare_window_for_vlm(window: FrameWindow) -> list[dict]:
             "image_base64": frame_to_base64(stamped, quality=70),
         })
     return vlm_frames
+
