@@ -7,7 +7,7 @@
   - Папка с .mov видео
 
 Выход:
-  - sharegpt_dataset.json  — датасет в формате ShareGPT для LLaMA-Factory
+  - sharegpt_train.json / sharegpt_val.json — датасет в формате ShareGPT для LLaMA-Factory
   - videomae_dataset/      — кадры для VideoMAE классификатора (train/val split)
 """
 
@@ -331,10 +331,21 @@ def main():
         if vname:
             video_annots.setdefault(vname, []).append(ann)
 
-    sharegpt_dataset = []
+    # Train/val делим ПО ВИДЕО и ДО аугментации: иначе копии одного клипа
+    # попадают в обе выборки, и eval_loss получается завышенно хорошим.
+    video_names = sorted(video_annots)
+    random.shuffle(video_names)
+    n_val = max(1, round(len(video_names) * args.val_ratio))
+    val_videos = set(video_names[:n_val])
+
+    train_data: list = []
+    val_data: list = []
     clip_counter = 0
 
     for video_name, annots in video_annots.items():
+        is_val = video_name in val_videos
+        target = val_data if is_val else train_data
+        n_aug = 0 if is_val else args.augment_copies   # в валидации — только оригиналы
         video_path = resolve_video_file(args.videos_dir, video_name)
         if not video_path:
             print(f"⚠ Видео не найдено в {args.videos_dir}: {video_name}, пропускаю")
@@ -360,7 +371,7 @@ def main():
                 continue
 
             # Оригинал + аугментации
-            for aug_i in range(1 + args.augment_copies):
+            for aug_i in range(1 + n_aug):
                 apply_aug = aug_i > 0
                 clip_id = f"pos_{clip_counter:05d}"
 
@@ -372,7 +383,7 @@ def main():
                     apply_augmentation=apply_aug,
                     timecode_sec=tc,
                 )
-                sharegpt_dataset.append(entry)
+                target.append(entry)
 
                 # VideoMAE
                 save_videomae_frames(frames, videomae_dir / "train", "violation", clip_id, apply_aug)
@@ -381,21 +392,18 @@ def main():
         # ── Негативные примеры (чистые отрезки) ──
         neg_clips = extract_negative_frames(str(video_path), positive_times, args.neg_per_video)
         for neg_frames in neg_clips:
-            for aug_i in range(1 + args.augment_copies):
+            for aug_i in range(1 + n_aug):
                 apply_aug = aug_i > 0
                 clip_id = f"neg_{clip_counter:05d}"
 
                 entry = build_sharegpt_entry(neg_frames, apply_augmentation=apply_aug)
-                sharegpt_dataset.append(entry)
+                target.append(entry)
 
                 save_videomae_frames(neg_frames, videomae_dir / "train", "no_violation", clip_id, apply_aug)
                 clip_counter += 1
 
-    # ── Train / Val split ──
-    random.shuffle(sharegpt_dataset)
-    val_size = int(len(sharegpt_dataset) * args.val_ratio)
-    train_data = sharegpt_dataset[val_size:]
-    val_data = sharegpt_dataset[:val_size]
+    random.shuffle(train_data)
+    print(f"Train: {len(train_data)} примеров, val: {len(val_data)} (видео в val: {sorted(val_videos)})")
 
     # Сохраняем ShareGPT
     train_path = output / "sharegpt_train.json"
