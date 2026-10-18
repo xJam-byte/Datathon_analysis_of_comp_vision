@@ -97,7 +97,7 @@ function LockIcon() {
   );
 }
 
-// ─── Шапка: коллаб-локап ─────────────────────────────────────────────────
+// ─── Шапка ─────────────────────────────────────────────────
 
 function Header({ apiKey, setApiKey, health }: { apiKey: string; setApiKey: (k: string) => void; health: Health }) {
   const [open, setOpen] = useState(false);
@@ -106,16 +106,8 @@ function Header({ apiKey, setApiKey, health }: { apiKey: string; setApiKey: (k: 
 
   return (
     <header>
-      <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] border-b-2 border-ink">
-        <div className="bg-forte text-white px-4 sm:px-8 py-3 font-display font-semibold text-[22px] sm:text-[27px] leading-tight">
-          ForteBank
-        </div>
-        <div className="bg-ink text-wheat-light grid place-items-center px-3 sm:px-4 font-display text-2xl" aria-hidden>
-          ×
-        </div>
-        <div className="tex-wheat-fine text-ink px-4 sm:px-8 py-3 font-display italic font-semibold text-[22px] sm:text-[27px] leading-tight">
-          Фермеры
-        </div>
+      <div className="tex-wheat-fine text-ink border-b-2 border-ink px-4 sm:px-8 py-3 font-display italic font-semibold text-[22px] sm:text-[27px] leading-tight">
+        Farmers
       </div>
 
       <div className="bg-surface border-b border-line">
@@ -789,14 +781,6 @@ export default function HomePage() {
         )}
       </main>
 
-      <footer className="border-t-2 border-ink text-xs text-muted py-5">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 flex flex-wrap justify-between gap-2">
-          <span>
-            <span className="text-forte font-semibold">ForteBank</span> × <span className="italic font-semibold text-ink">Фермеры</span>
-          </span>
-          <span>CashGuard · ForteBank Datathon 26 · Qwen2.5-VL-32B-Instruct (AWQ), работает локально</span>
-        </div>
-      </footer>
     </div>
   );
 }
