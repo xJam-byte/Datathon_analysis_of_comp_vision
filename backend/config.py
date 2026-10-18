@@ -45,11 +45,12 @@ FINETUNED_USER_PROMPT = (
 
 # ─── Параметры обработки видео ─────────────────────────────────────────
 _finetuned = PROMPT_MODE == "finetuned"
-SAMPLE_FPS = float(os.getenv("SAMPLE_FPS", "2.0"))
+_qa = PROMPT_MODE == "qa"
+SAMPLE_FPS = float(os.getenv("SAMPLE_FPS", "1.0" if _qa else "2.0"))
 WINDOW_SIZE_SEC = float(os.getenv("WINDOW_SIZE_SEC", "4.0" if _finetuned else "8.0"))
 WINDOW_STRIDE_SEC = float(os.getenv("WINDOW_STRIDE_SEC", "2.0" if _finetuned else "4.0"))
-VLM_MAX_DIM = int(os.getenv("VLM_MAX_DIM", "512" if _finetuned else "768"))
-STAMP_TIMECODE = _bool("STAMP_TIMECODE", "false" if _finetuned else "true")
+VLM_MAX_DIM = int(os.getenv("VLM_MAX_DIM", "512" if _finetuned else ("640" if _qa else "768")))
+STAMP_TIMECODE = _bool("STAMP_TIMECODE", "false" if (_finetuned or _qa) else "true")
 EVIDENCE_JPEG_QUALITY = int(os.getenv("EVIDENCE_JPEG_QUALITY", "85"))
 
 # Отсечение статичных окон. Выключено: оставленные деньги, открытый сейф,
@@ -65,6 +66,10 @@ MERGE_GAP_SEC = float(os.getenv("MERGE_GAP_SEC", str(WINDOW_SIZE_SEC + 0.1)))
 # из logprobs vLLM. Окно считается нарушением, если P >= порога.
 # 0 — выключить и брать обычный ответ модели как есть.
 VIOLATION_THRESHOLD = float(os.getenv("VIOLATION_THRESHOLD", "0.2"))
+
+# ─── Режим qa: по каждому окну 10 вопросов «да/нет» (по одному на правило) ─
+# Окно считается нарушением правила, если P(«Да») >= QA_THRESHOLD.
+QA_THRESHOLD = float(os.getenv("QA_THRESHOLD", "0.5"))
 
 # ─── Лимиты ────────────────────────────────────────────────────────────
 MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "200"))

@@ -35,6 +35,7 @@ from config import (
     MOTION_FILTER,
     PROCESSING_BUDGET_SEC,
     PROMPT_MODE,
+    QA_THRESHOLD,
     RULES_KB_PATH,
     VLM_API_KEY,
     VLM_BASE_URL,
@@ -266,6 +267,54 @@ async def describe_violation(client: httpx.AsyncClient, messages: list[dict]) ->
     return {"violations": []}
 
 
+# ─── Режим qa ───────────────────────────────────────────────────────────
+
+def qa_messages(frames: list[dict], text: str) -> list[dict]:
+    """Кадры идут первыми — у всех 10 вопросов общий префикс, vLLM кэширует его обработку."""
+    images = [
+        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{f['image_base64']}"}}
+        for f in frames
+    ]
+    intro = (
+        f"Перед тобой {len(frames)} последовательных кадров (1 кадр в секунду) "
+        "с камеры видеонаблюдения, установленной над кассовым столом банка. "
+    )
+    return [{"role": "user", "content": [*images, {"type": "text", "text": intro + text}]}]
+
+
+def qa_question(rule: dict) -> str:
+    return (
+        f"Верно ли, что на этих кадрах видно следующее: {rule['visual_signs']} "
+        "Ответь одним словом: Да или Нет."
+    )
+
+
+def p_yes_from_tops(tops: list[dict]) -> float:
+    yes = no = 0.0
+    for t in tops:
+        tok = t["token"].strip().lower()
+        if tok.startswith("да") or tok == "yes":
+            yes += math.exp(t["logprob"])
+        elif tok.startswith("нет") or tok.startswith("не") or tok == "no":
+            no += math.exp(t["logprob"])
+    return yes / (yes + no) if yes + no > 0 else 0.0
+
+
+async def qa_probability(client: httpx.AsyncClient, frames: list[dict], rule: dict) -> float:
+    choice = await _chat(client, qa_messages(frames, qa_question(rule)),
+                         max_tokens=1, logprobs=True, top_logprobs=10)
+    return p_yes_from_tops(choice["logprobs"]["content"][0]["top_logprobs"])
+
+
+async def qa_describe(client: httpx.AsyncClient, frames: list[dict], rule: dict) -> str:
+    text = (
+        f"Кратко, 1–2 предложения, опиши, что именно видно на кадрах и указывает на нарушение "
+        f"«{rule['type']}». Описывай только видимые действия, без домыслов и без имён."
+    )
+    choice = await _chat(client, qa_messages(frames, text), max_tokens=120)
+    return (choice["message"]["content"] or "").strip()
+
+
 async def check_vlm() -> dict:
     """Проверка доступности VLM-сервера (для /health и UI)."""
     try:
@@ -398,6 +447,20 @@ async def analyze_video(video_path: str | Path, progress: Optional[ProgressCallb
         async with sem:
             try:
                 vlm_frames = await asyncio.to_thread(prepare_window_for_vlm, w)
+                if PROMPT_MODE == "qa":
+                    probs = await asyncio.gather(*(qa_probability(client, vlm_frames, r) for r in kb))
+                    logger.info("окно %.1f–%.1f %s", w.start_sec, w.end_sec,
+                                " ".join(f"{r['code'][:12]}={p:.2f}" for r, p in zip(kb, probs)))
+                    center = round(min(duration, (w.start_sec + w.end_sec) / 2), 1)
+                    for r, p in zip(kb, probs):
+                        if p >= QA_THRESHOLD:
+                            try:
+                                desc = clean_description(await qa_describe(client, vlm_frames, r))
+                            except Exception:  # noqa: BLE001
+                                desc = ""
+                            detections.append(Detection(r, center, desc, w, p))
+                    ok += 1
+                    return
                 messages = build_messages(vlm_frames, w, kb)
                 if PROMPT_MODE == "finetuned" and VIOLATION_THRESHOLD > 0:
                     p = await violation_probability(client, messages)
