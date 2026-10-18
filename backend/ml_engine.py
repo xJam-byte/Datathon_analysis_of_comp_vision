@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import difflib
 import json
+import math
 import logging
 import re
 import time
@@ -41,6 +42,7 @@ from config import (
     VLM_MAX_TOKENS,
     VLM_MODEL_NAME,
     VLM_REQUEST_TIMEOUT_SEC,
+    VIOLATION_THRESHOLD,
     VLM_TEMPERATURE,
     WINDOW_SIZE_SEC,
 )
@@ -76,7 +78,7 @@ def _norm(s: str) -> str:
     return re.sub(r"[^0-9a-zа-яё]+", " ", s.lower().replace("ё", "е")).strip()
 
 
-def match_rule(raw_type: str, kb: list[dict]) -> Optional[dict]:
+def match_rule(raw_type: str, kb: list[dict], lenient: bool = False) -> Optional[dict]:
     """
     Сопоставляет тип из ответа модели с правилом базы знаний.
     Порядок: точный код → точное название → нечёткое совпадение (≥ 0.75).
@@ -97,7 +99,8 @@ def match_rule(raw_type: str, kb: list[dict]) -> Optional[dict]:
         score = difflib.SequenceMatcher(None, nt, _norm(r.get("type", ""))).ratio()
         if score > best_score:
             best, best_score = r, score
-    return best if best_score >= 0.75 else None
+    # lenient: модель уже уверенно сказала «нарушение есть» — берём ближайший тип
+    return best if best_score >= (0.35 if lenient else 0.75) else None
 
 
 _TIME_PHRASE = re.compile(
@@ -211,6 +214,58 @@ async def call_vlm(client: httpx.AsyncClient, messages: list[dict]) -> dict:
     return parse_vlm_response(raw)
 
 
+# В обучении пустой ответ — это токен ' []', а ' [' встречается только перед нарушением.
+# Поэтому решение снимаем сразу после '{"violations":' и сравниваем «[{» против «[]».
+DECISION_PREFIX = '{"violations":'
+TYPE_PREFIX = '{"violations": [{"type": "'
+
+
+async def _chat(client: httpx.AsyncClient, messages: list[dict], **extra) -> dict:
+    resp = await client.post(
+        f"{VLM_BASE_URL}/chat/completions",
+        json={"model": VLM_MODEL_NAME, "messages": messages, "temperature": 0.0, **extra},
+        headers={"Authorization": f"Bearer {VLM_API_KEY}"},
+    )
+    resp.raise_for_status()
+    return resp.json()["choices"][0]
+
+
+def p_violation_from_tops(tops: list[dict]) -> float:
+    yes = sum(math.exp(t["logprob"]) for t in tops if "{" in t["token"] or t["token"].strip() == "[")
+    no = sum(math.exp(t["logprob"]) for t in tops if "]" in t["token"])
+    return yes / (yes + no) if yes + no > 0 else 0.0
+
+
+async def violation_probability(client: httpx.AsyncClient, messages: list[dict]) -> float:
+    """P(нарушение): доля «[{…» против «[]» в распределении следующего токена."""
+    choice = await _chat(
+        client,
+        messages + [{"role": "assistant", "content": DECISION_PREFIX}],
+        max_tokens=1, logprobs=True, top_logprobs=10,
+        continue_final_message=True, add_generation_prompt=False,
+    )
+    return p_violation_from_tops(choice["logprobs"]["content"][0]["top_logprobs"])
+
+
+async def describe_violation(client: httpx.AsyncClient, messages: list[dict]) -> dict:
+    """Заставляет модель назвать тип и описание (ответ начинается с '{"type": "')."""
+    choice = await _chat(
+        client,
+        messages + [{"role": "assistant", "content": TYPE_PREFIX}],
+        max_tokens=VLM_MAX_TOKENS, continue_final_message=True, add_generation_prompt=False,
+    )
+    text = TYPE_PREFIX + (choice["message"]["content"] or "")
+    parsed = parse_vlm_response(text)
+    if parsed["violations"]:
+        return parsed
+    # Ответ оборван или кривой — достаём поля регулярками
+    t = re.search(r'"type":\s*"([^"]+)"', text)
+    d = re.search(r'"description":\s*"([^"]*)', text)
+    if t:
+        return {"violations": [{"type": t.group(1), "description": d.group(1) if d else ""}]}
+    return {"violations": []}
+
+
 async def check_vlm() -> dict:
     """Проверка доступности VLM-сервера (для /health и UI)."""
     try:
@@ -233,15 +288,17 @@ class Detection:
     timecode_sec: float
     description: str
     window: FrameWindow
+    confidence: float = 1.0
 
 
-def detections_from_window(result: dict, window: FrameWindow, kb: list[dict], duration: float) -> list[Detection]:
+def detections_from_window(result: dict, window: FrameWindow, kb: list[dict], duration: float,
+                           confidence: float = 1.0, lenient: bool = False) -> list[Detection]:
     out: list[Detection] = []
     center = min(duration, (window.start_sec + window.end_sec) / 2)
     for v in result.get("violations", []):
         if not isinstance(v, dict):
             continue
-        rule = match_rule(str(v.get("type", "")), kb)
+        rule = match_rule(str(v.get("type", "")), kb, lenient=lenient)
         if rule is None:
             logger.info("Отброшен тип вне базы знаний: %r", v.get("type"))
             continue
@@ -254,7 +311,7 @@ def detections_from_window(result: dict, window: FrameWindow, kb: list[dict], du
                     tc = model_tc
             except (TypeError, ValueError):
                 pass
-        out.append(Detection(rule, round(tc, 1), clean_description(str(v.get("description", ""))), window))
+        out.append(Detection(rule, round(tc, 1), clean_description(str(v.get("description", ""))), window, confidence))
     return out
 
 
@@ -298,6 +355,7 @@ def merge_detections(dets: list[Detection], gap_sec: float = MERGE_GAP_SEC) -> l
                 "normative_source": rule["normative_source"],
                 "observation": desc,
                 "windows_count": len(c),
+                "confidence": round(max(d.confidence for d in c), 3),
                 "time_range_sec": [c[0].window.start_sec, c[-1].window.end_sec],
             })
 
@@ -340,8 +398,16 @@ async def analyze_video(video_path: str | Path, progress: Optional[ProgressCallb
         async with sem:
             try:
                 vlm_frames = await asyncio.to_thread(prepare_window_for_vlm, w)
-                result = await call_vlm(client, build_messages(vlm_frames, w, kb))
-                detections.extend(detections_from_window(result, w, kb, duration))
+                messages = build_messages(vlm_frames, w, kb)
+                if PROMPT_MODE == "finetuned" and VIOLATION_THRESHOLD > 0:
+                    p = await violation_probability(client, messages)
+                    if p >= VIOLATION_THRESHOLD:
+                        result = await describe_violation(client, messages)
+                        detections.extend(detections_from_window(result, w, kb, duration, p, lenient=True))
+                    logger.info("окно %.1f–%.1f P=%.3f", w.start_sec, w.end_sec, p)
+                else:
+                    result = await call_vlm(client, messages)
+                    detections.extend(detections_from_window(result, w, kb, duration))
                 ok += 1
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"{type(exc).__name__}: {exc}")
