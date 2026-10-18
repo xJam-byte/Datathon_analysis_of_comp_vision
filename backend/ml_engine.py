@@ -35,6 +35,7 @@ from config import (
     MOTION_FILTER,
     PROCESSING_BUDGET_SEC,
     PROMPT_MODE,
+    QA_RULE_THRESHOLDS,
     QA_THRESHOLD,
     RULES_KB_PATH,
     VLM_API_KEY,
@@ -453,7 +454,7 @@ async def analyze_video(video_path: str | Path, progress: Optional[ProgressCallb
                                 " ".join(f"{r['code'][:12]}={p:.2f}" for r, p in zip(kb, probs)))
                     center = round(min(duration, (w.start_sec + w.end_sec) / 2), 1)
                     for r, p in zip(kb, probs):
-                        if p >= QA_THRESHOLD:
+                        if p >= QA_RULE_THRESHOLDS.get(r["code"], QA_THRESHOLD):
                             try:
                                 desc = clean_description(await qa_describe(client, vlm_frames, r))
                             except Exception:  # noqa: BLE001

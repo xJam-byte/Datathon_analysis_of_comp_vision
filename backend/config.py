@@ -3,6 +3,7 @@
 Все параметры читаются из переменных окружения с разумными дефолтами.
 """
 
+import json
 import os
 from pathlib import Path
 
@@ -72,6 +73,9 @@ VIOLATION_THRESHOLD = float(os.getenv("VIOLATION_THRESHOLD", "0.2"))
 # ─── Режим qa: по каждому окну 10 вопросов «да/нет» (по одному на правило) ─
 # Окно считается нарушением правила, если P(«Да») >= QA_THRESHOLD.
 QA_THRESHOLD = float(os.getenv("QA_THRESHOLD", "0.5"))
+# Свои пороги для отдельных правил (подбираются deploy/calib.py), JSON: {"CODE": 0.7}.
+# Порог > 1 выключает правило.
+QA_RULE_THRESHOLDS: dict[str, float] = json.loads(os.getenv("QA_RULE_THRESHOLDS", "{}") or "{}")
 
 # ─── Лимиты ────────────────────────────────────────────────────────────
 MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "200"))
