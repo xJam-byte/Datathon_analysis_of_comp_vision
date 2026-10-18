@@ -22,9 +22,10 @@ export default function RootLayout({
           crossOrigin="anonymous"
         />
         <link
-          href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&subset=cyrillic&display=swap"
+          href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,500;0,600;1,500;1,600&family=Golos+Text:wght@400;500;600;700&subset=cyrillic&display=swap"
           rel="stylesheet"
         />
+        <meta name="theme-color" content="#951B4C" />
       </head>
       <body className="antialiased">{children}</body>
     </html>

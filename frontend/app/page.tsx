@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 
 // ─── Типы (схема API, раздел 10 ТЗ + доп. поля бэкенда) ─────────────────
 
@@ -73,6 +73,8 @@ function isAccepted(name: string) {
   return ACCEPTED.some((ext) => n.endsWith(ext));
 }
 
+const flagNum = (i: number) => String(i + 1).padStart(2, "0");
+
 /** Отделяет наблюдение от ссылки на норму для старых ответов без доп. полей */
 function splitDescription(v: Violation): { observation: string; source: string } {
   if (v.observation !== undefined && v.normative_source) {
@@ -86,7 +88,16 @@ function splitDescription(v: Violation): { observation: string; source: string }
   };
 }
 
-// ─── Шапка ───────────────────────────────────────────────────────────────
+function LockIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden className="shrink-0 mt-[3px]">
+      <rect x="3" y="11" width="18" height="11" />
+      <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+    </svg>
+  );
+}
+
+// ─── Шапка: коллаб-локап ─────────────────────────────────────────────────
 
 function Header({ apiKey, setApiKey, health }: { apiKey: string; setApiKey: (k: string) => void; health: Health }) {
   const [open, setOpen] = useState(false);
@@ -94,43 +105,57 @@ function Header({ apiKey, setApiKey, health }: { apiKey: string; setApiKey: (k: 
   const statusText = health === null ? "Сервер недоступен" : ready ? "Модель готова" : "Модель загружается или недоступна";
 
   return (
-    <header className="bg-surface border-b border-line">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3 flex items-center gap-4 flex-wrap">
-        <div className="flex items-baseline gap-3 mr-auto">
-          <span className="text-lg font-semibold tracking-tight">CashGuard</span>
-          <span className="text-sm text-muted hidden sm:inline">проверка кассовых видеозаписей</span>
+    <header>
+      <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] border-b-2 border-ink">
+        <div className="bg-forte text-white px-4 sm:px-8 py-3 font-display font-semibold text-[22px] sm:text-[27px] leading-tight">
+          ForteBank
         </div>
+        <div className="bg-ink text-wheat-light grid place-items-center px-3 sm:px-4 font-display text-2xl" aria-hidden>
+          ×
+        </div>
+        <div className="tex-wheat-fine text-ink px-4 sm:px-8 py-3 font-display italic font-semibold text-[22px] sm:text-[27px] leading-tight">
+          Фермеры
+        </div>
+      </div>
 
-        <span className="flex items-center gap-2 text-sm text-muted" role="status">
-          <span className={`w-2 h-2 rounded-full ${ready ? "bg-clear" : "bg-alert"}`} aria-hidden />
-          {statusText}
-        </span>
+      <div className="bg-surface border-b border-line">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-2.5 flex items-center gap-x-5 gap-y-2 flex-wrap">
+          <div className="flex items-baseline gap-3 mr-auto">
+            <span className="text-base font-semibold tracking-wide">CashGuard</span>
+            <span className="text-sm text-muted hidden sm:inline">проверка кассовых видеозаписей</span>
+          </div>
 
-        <div className="relative">
-          <button className="btn-ghost text-sm" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
-            Ключ API {apiKey ? "задан" : "не задан"}
-          </button>
-          {open && (
-            <div className="absolute right-0 mt-2 w-72 panel p-3 shadow-lg z-20">
-              <label htmlFor="api-key" className="block text-sm text-muted mb-1">
-                X-API-Key
-              </label>
-              <input
-                id="api-key"
-                type="password"
-                value={apiKey}
-                onChange={(e) => {
-                  setApiKey(e.target.value);
-                  try {
-                    localStorage.setItem("cashguard_api_key", e.target.value);
-                  } catch {}
-                }}
-                className="w-full border border-line rounded-md px-3 py-2 text-sm"
-                placeholder="Ключ, выданный командой"
-                autoComplete="off"
-              />
-            </div>
-          )}
+          <span className="flex items-center gap-2 text-sm text-muted" role="status">
+            <span className={`w-2 h-2 ${ready ? "bg-clear" : "bg-alert"}`} aria-hidden />
+            {statusText}
+          </span>
+
+          <div className="relative">
+            <button className="btn-ghost text-sm" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
+              Ключ API {apiKey ? "задан" : "не задан"}
+            </button>
+            {open && (
+              <div className="absolute right-0 mt-2 w-72 max-w-[calc(100vw-2rem)] panel p-3 shadow-lg z-20">
+                <label htmlFor="api-key" className="block text-sm text-muted mb-1">
+                  X-API-Key
+                </label>
+                <input
+                  id="api-key"
+                  type="password"
+                  value={apiKey}
+                  onChange={(e) => {
+                    setApiKey(e.target.value);
+                    try {
+                      localStorage.setItem("cashguard_api_key", e.target.value);
+                    } catch { }
+                  }}
+                  className="w-full border border-ink bg-white px-3 py-2 text-sm"
+                  placeholder="Ключ, выданный командой"
+                  autoComplete="off"
+                />
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </header>
@@ -156,7 +181,7 @@ function UploadZone({ onFile, onReject }: { onFile: (f: File) => void; onReject:
     <div
       role="button"
       tabIndex={0}
-      className={`dropzone p-10 text-center cursor-pointer ${active ? "dropzone-active" : ""}`}
+      className={`dropzone p-6 sm:p-9 cursor-pointer flex flex-col gap-5 ${active ? "dropzone-active" : ""}`}
       onClick={() => inputRef.current?.click()}
       onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && inputRef.current?.click()}
       onDragOver={(e) => {
@@ -180,13 +205,21 @@ function UploadZone({ onFile, onReject }: { onFile: (f: File) => void; onReject:
           e.target.value = "";
         }}
       />
-      <p className="text-lg font-medium">Перетащите видеозапись кассы сюда</p>
-      <p className="text-muted text-sm mt-1">или нажмите, чтобы выбрать файл · .mov или .mp4</p>
+      <p className="kicker text-wheat-ink">Загрузка записи</p>
+      <p className="font-display font-semibold text-[28px] sm:text-[36px] leading-[1.05]">Перетащите видеозапись кассы сюда</p>
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-3">
+        <span className="btn-primary">Выбрать файл</span>
+        <span className="text-muted text-sm">или нажмите, чтобы выбрать файл · .mov или .mp4</span>
+      </div>
+      <p className="flex gap-2.5 items-start text-sm text-muted border-t border-line pt-4">
+        <LockIcon />
+        Видео обрабатывается локально на сервере команды, без внешних AI-сервисов. Лица не распознаются.
+      </p>
     </div>
   );
 }
 
-// ─── Таймлайн доказательств ──────────────────────────────────────────────
+// ─── Таймлайн-поле доказательств ─────────────────────────────────────────
 
 function EvidenceTimeline({
   duration,
@@ -207,42 +240,67 @@ function EvidenceTimeline({
   const pct = (t: number) => `${Math.min(100, Math.max(0, (t / duration) * 100))}%`;
 
   return (
-    <div className="mt-3">
-      <div
-        className="timeline"
-        onClick={(e) => {
-          const r = e.currentTarget.getBoundingClientRect();
-          onSeek(((e.clientX - r.left) / r.width) * duration);
-        }}
-        aria-label="Таймлайн видео с отметками нарушений"
-      >
-        {violations.map((v, i) =>
-          v.time_range_sec ? (
-            <div
-              key={`r${i}`}
-              className="timeline-range"
-              style={{ left: pct(v.time_range_sec[0]), width: `calc(${pct(v.time_range_sec[1])} - ${pct(v.time_range_sec[0])})` }}
-            />
-          ) : null
-        )}
+    <div className="mt-4">
+      <div className="relative pt-8">
+        <div
+          className="field"
+          role="slider"
+          tabIndex={0}
+          aria-label="Таймлайн видео с отметками нарушений"
+          aria-valuemin={0}
+          aria-valuemax={Math.round(duration)}
+          aria-valuenow={Math.round(current)}
+          aria-valuetext={formatTime(current)}
+          onClick={(e) => {
+            const r = e.currentTarget.getBoundingClientRect();
+            onSeek(((e.clientX - r.left) / r.width) * duration);
+          }}
+          onKeyDown={(e) => {
+            const step = e.shiftKey ? 10 : 2;
+            if (e.key === "ArrowRight") onSeek(Math.min(duration, current + step));
+            else if (e.key === "ArrowLeft") onSeek(Math.max(0, current - step));
+            else if (e.key === "Home") onSeek(0);
+            else if (e.key === "End") onSeek(duration);
+            else return;
+            e.preventDefault();
+          }}
+        >
+          <div className="field-played" style={{ width: pct(current) }} />
+          {violations.map((v, i) =>
+            v.time_range_sec ? (
+              <div
+                key={`r${i}`}
+                className="field-range"
+                style={{ left: pct(v.time_range_sec[0]), width: `calc(${pct(v.time_range_sec[1])} - ${pct(v.time_range_sec[0])})` }}
+              />
+            ) : null
+          )}
+          <div className="field-playhead" style={{ left: pct(current) }} />
+        </div>
+
         {violations.map((v, i) => (
-          <button
-            key={`m${i}`}
-            className="timeline-mark"
-            data-active={activeIndex === i}
-            style={{ left: pct(v.timecode_sec) }}
-            title={`${formatTime(v.timecode_sec)} — ${v.type}`}
-            aria-label={`Нарушение ${i + 1} на ${formatTime(v.timecode_sec)}`}
-            onClick={(e) => {
-              e.stopPropagation();
-              onSelect(i);
-            }}
-          />
+          <Fragment key={`m${i}`}>
+            <span className="flag-pole" style={{ left: pct(v.timecode_sec) }} aria-hidden />
+            <button
+              className="flag"
+              data-active={activeIndex === i}
+              data-flip={v.timecode_sec / duration > 0.92}
+              style={{ left: pct(v.timecode_sec) }}
+              title={`${formatTime(v.timecode_sec)} — ${v.type}`}
+              aria-label={`Нарушение ${i + 1} на ${formatTime(v.timecode_sec)}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                onSelect(i);
+              }}
+            >
+              <span className="flag-cloth tnum">{flagNum(i)}</span>
+            </button>
+          </Fragment>
         ))}
-        <div className="timeline-playhead" style={{ left: pct(current) }} />
       </div>
-      <div className="flex justify-between text-xs text-muted tnum mt-1">
+      <div className="flex justify-between gap-3 text-xs text-muted tnum mt-1.5">
         <span>0:00.0</span>
+        <span className="hidden sm:inline">Клик по полю или ← → для перемотки</span>
         <span>{formatTime(duration)}</span>
       </div>
     </div>
@@ -271,13 +329,20 @@ function ProcessingPanel({ job, elapsed }: { job: JobResponse | null; elapsed: n
   }
 
   return (
-    <div className="panel p-5" role="status" aria-live="polite">
-      <div className="flex items-baseline justify-between gap-4">
-        <p className="font-semibold">{title}</p>
-        <p className="text-muted text-sm tnum">{Math.floor(elapsed)} с</p>
+    <div className="panel p-5 sm:p-6" role="status" aria-live="polite">
+      <p className="kicker text-wheat-ink">Идёт анализ</p>
+      <div className="flex items-baseline justify-between gap-4 mt-2">
+        <p className="font-display font-semibold text-[28px] sm:text-[34px] leading-[1.05]">{title}</p>
+        <p className="font-display font-semibold text-[32px] sm:text-[40px] leading-none text-wheat-ink tnum shrink-0">
+          {ratio === null ? `${Math.floor(elapsed)} с` : `${Math.round(ratio * 100)}%`}
+        </p>
       </div>
-      {detail && <p className="text-sm text-muted mt-1">{detail}</p>}
-      <div className="progress-track mt-4">
+      <p className="text-sm text-muted mt-1 tnum">
+        {detail}
+        {detail && ratio !== null ? " · " : ""}
+        {ratio !== null ? `${Math.floor(elapsed)} с` : ""}
+      </p>
+      <div className="progress-track mt-5">
         {ratio === null ? (
           <div className="progress-bar progress-indeterminate" />
         ) : (
@@ -289,7 +354,7 @@ function ProcessingPanel({ job, elapsed }: { job: JobResponse | null; elapsed: n
   );
 }
 
-// ─── Вердикт ─────────────────────────────────────────────────────────────
+// ─── Вердикт: полоса на всю ширину ───────────────────────────────────────
 
 function Verdict({ job, onExport }: { job: JobResponse; onExport: () => void }) {
   const isViolation = job.verdict === "violation";
@@ -297,35 +362,45 @@ function Verdict({ job, onExport }: { job: JobResponse; onExport: () => void }) 
   const m = job.meta;
 
   return (
-    <div className={`rounded-[10px] p-5 border ${isViolation ? "bg-forte-soft border-forte/30" : "bg-clear-soft border-clear/30"}`}>
-      <p className={`text-xl font-semibold ${isViolation ? "text-forte" : "text-clear"}`}>
-        {isViolation ? "Обнаружены признаки возможных нарушений" : "Нарушение не обнаружено"}
-      </p>
-      <p className="text-sm mt-1">
-        {isViolation
-          ? `Найдено эпизодов: ${count}. Проверьте каждый по кадрам и видео.`
-          : "Модель не нашла на видео признаков нарушений из перечня правил."}
-      </p>
-      <p className="text-xs text-muted mt-3">
-        Результат — подсказка для проверяющего, а не юридическое или дисциплинарное заключение. Сервис оценивает только
-        то, что видно на видео.
-      </p>
-      <div className="flex items-center justify-between gap-3 mt-4 flex-wrap">
-        <p className="text-xs text-muted tnum">
-          {m?.processing_time_sec !== undefined && `Анализ: ${Math.round(m.processing_time_sec)} с`}
-          {m?.windows_analyzed !== undefined && ` · проверено фрагментов: ${m.windows_analyzed} из ${m.windows_total}`}
-          {` · задача ${job.job_id}`}
-        </p>
-        <button className="btn-ghost text-sm" onClick={onExport}>
-          Скачать отчёт JSON
-        </button>
+    <section className={`on-dark text-white border-b-2 border-ink ${isViolation ? "bg-forte" : "bg-clear"}`} aria-live="polite">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 py-7 sm:py-10 flex flex-col lg:flex-row lg:items-end justify-between gap-6">
+        <div className="max-w-3xl">
+          <p className="kicker text-white/85">Вердикт</p>
+          <h2 className="font-display font-semibold text-[34px] sm:text-[52px] leading-[1] mt-3 text-balance">
+            {isViolation ? "Обнаружены признаки возможных нарушений" : "Нарушение не обнаружено"}
+          </h2>
+          <p className="text-[15px] mt-4">
+            {isViolation
+              ? `Найдено эпизодов: ${count}. Проверьте каждый по кадрам и видео.`
+              : "Модель не нашла на видео признаков нарушений из перечня правил."}
+          </p>
+          <p className="text-sm text-white/85 mt-2 max-w-[70ch]">
+            Результат — подсказка для проверяющего, а не юридическое или дисциплинарное заключение. Сервис оценивает только
+            то, что видно на видео.
+          </p>
+          {!!m?.windows_failed && (
+            <p className="text-sm text-wheat-light font-medium mt-2">
+              {m.windows_failed} фрагм. не удалось проверить — часть видео могла остаться без анализа.
+            </p>
+          )}
+        </div>
+        <div className="flex flex-col items-start lg:items-end gap-3 shrink-0">
+          <button className="btn-on-dark" onClick={onExport}>
+            Скачать отчёт JSON
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
+              <path d="M12 3v12" />
+              <path d="m7 10 5 5 5-5" />
+              <path d="M5 21h14" />
+            </svg>
+          </button>
+          <p className="text-xs text-white/85 tnum lg:text-right">
+            {m?.processing_time_sec !== undefined && `Анализ: ${Math.round(m.processing_time_sec)} с`}
+            {m?.windows_analyzed !== undefined && ` · проверено фрагментов: ${m.windows_analyzed} из ${m.windows_total}`}
+            {` · задача ${job.job_id}`}
+          </p>
+        </div>
       </div>
-      {!!m?.windows_failed && (
-        <p className="text-xs text-alert mt-2">
-          {m.windows_failed} фрагм. не удалось проверить — часть видео могла остаться без анализа.
-        </p>
-      )}
-    </div>
+    </section>
   );
 }
 
@@ -347,20 +422,20 @@ function FindingCard({
   const { observation, source } = splitDescription(v);
 
   return (
-    <article id={`finding-${index}`} className="panel finding p-5" data-active={active}>
-      <div className="flex items-start gap-3">
-        <span className="tnum text-sm text-muted pt-0.5 w-5 shrink-0">{index + 1}</span>
-        <h3 className="font-semibold leading-snug flex-1">{v.type}</h3>
+    <article id={`finding-${index}`} className="panel finding p-5 sm:p-6" data-active={active}>
+      <div className="flex items-center justify-between gap-3">
+        <p className="kicker text-forte">Флажок {flagNum(index)}</p>
         <button
-          className="shrink-0 tnum text-sm font-semibold text-forte bg-forte-soft hover:bg-forte hover:text-white px-2.5 py-1 rounded-md transition-colors"
+          className="shrink-0 tnum text-sm font-semibold text-forte border border-forte hover:bg-forte hover:text-white px-3 py-1.5 transition-colors"
           onClick={() => onSeek(v.timecode_sec)}
           title="Перемотать видео к этому моменту"
         >
           ▶ {formatTime(v.timecode_sec)}
         </button>
       </div>
+      <h3 className="font-display font-semibold text-[24px] sm:text-[28px] leading-[1.1] mt-2">{v.type}</h3>
 
-      <div className="pl-8 mt-3 space-y-3">
+      <div className="mt-4 space-y-4">
         {observation && (
           <div>
             <p className="text-xs text-muted mb-0.5">Что видно на видео</p>
@@ -369,9 +444,11 @@ function FindingCard({
         )}
 
         {source && (
-          <div className="border-l-2 border-forte pl-3">
-            <p className="text-xs text-muted mb-0.5">Правило{v.rule_code ? ` ${v.rule_code}` : ""}</p>
-            <p className="text-sm">{source}</p>
+          <div className="bg-vault px-4 py-3">
+            <p className="font-display italic font-semibold text-[20px] leading-tight text-forte">
+              Правило{v.rule_code ? ` ${v.rule_code}` : ""}
+            </p>
+            <p className="text-sm mt-1">{source}</p>
           </div>
         )}
 
@@ -384,9 +461,9 @@ function FindingCard({
                   <img
                     src={`data:image/jpeg;base64,${f.image_base64}`}
                     alt={`Кадр на ${formatTime(f.timestamp_sec)}`}
-                    className="w-full aspect-video object-cover rounded-md border border-line group-hover:border-forte"
+                    className="w-full aspect-video object-cover border-2 border-transparent group-hover:border-forte"
                   />
-                  <span className="absolute bottom-1 left-1 bg-ink/75 text-white text-[11px] px-1.5 rounded tnum">
+                  <span className="absolute bottom-1 left-1 bg-ink/80 text-white text-[11px] px-1.5 tnum">
                     {formatTime(f.timestamp_sec)}
                   </span>
                 </button>
@@ -407,9 +484,9 @@ function FrameModal({ frame, onClose }: { frame: EvidenceFrame; onClose: () => v
   }, [onClose]);
 
   return (
-    <div className="fixed inset-0 z-50 bg-ink/80 flex items-center justify-center p-4" onClick={onClose} role="dialog" aria-modal>
+    <div className="on-dark fixed inset-0 z-50 bg-ink/85 flex items-center justify-center p-4" onClick={onClose} role="dialog" aria-modal>
       <figure className="max-w-5xl w-full" onClick={(e) => e.stopPropagation()}>
-        <img src={`data:image/jpeg;base64,${frame.image_base64}`} alt="Кадр-доказательство" className="w-full rounded-md" />
+        <img src={`data:image/jpeg;base64,${frame.image_base64}`} alt="Кадр-доказательство" className="w-full" />
         <figcaption className="flex justify-between items-center text-white mt-2 text-sm">
           <span className="tnum">Кадр на {formatTime(frame.timestamp_sec)}</span>
           <button className="underline" onClick={onClose}>
@@ -449,7 +526,7 @@ export default function HomePage() {
     try {
       const saved = localStorage.getItem("cashguard_api_key");
       if (saved) setApiKey(saved);
-    } catch {}
+    } catch { }
     return stopTimers;
   }, []);
 
@@ -581,31 +658,43 @@ export default function HomePage() {
       <Header apiKey={apiKey} setApiKey={setApiKey} health={health} />
       {modalFrame && <FrameModal frame={modalFrame} onClose={() => setModalFrame(null)} />}
 
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6">
+      <main className="flex-1 w-full">
         {!file ? (
-          <section className="max-w-3xl">
-            <h1 className="text-2xl font-semibold tracking-tight">Проверка видеозаписи кассы</h1>
-            <p className="text-muted mt-1 mb-5 max-w-[62ch]">
-              Загрузите запись с камеры кассового узла. Сервис найдёт эпизоды, похожие на нарушения кассовой дисциплины,
-              покажет момент на видео, кадры и пункт нормативного акта НБРК.
-            </p>
-            <UploadZone onFile={chooseFile} onReject={setError} />
-            {error && <p className="text-alert text-sm mt-3">{error}</p>}
-            <p className="text-xs text-muted mt-4 max-w-[62ch]">
-              Видео обрабатывается локально на сервере команды, без внешних AI-сервисов. Лица не распознаются.
-            </p>
+          <section className="grid lg:grid-cols-2 border-b-2 border-ink">
+            <div className="on-dark bg-forte-deep text-white px-5 sm:px-10 lg:px-14 py-10 sm:py-16 flex flex-col justify-between gap-10 lg:min-h-[560px]">
+              <p className="kicker text-wheat-light">Лимитированный коллаб · 01</p>
+              <div>
+                <h1 className="font-display font-semibold text-[clamp(52px,8.5vw,116px)] leading-[0.92] tracking-[-0.01em]">
+                  Каждая купюра <em className="font-medium text-wheat-light">на&nbsp;виду</em>
+                </h1>
+                <p className="mt-6 max-w-[48ch] text-[16px] text-white/90">
+                  Загрузите запись с камеры кассового узла. Сервис найдёт эпизоды, похожие на нарушения кассовой дисциплины,
+                  покажет момент на видео, кадры и пункт нормативного акта НБРК.
+                </p>
+              </div>
+            </div>
+            <div className="tex-wheat px-4 sm:px-10 lg:px-14 py-10 sm:py-16 flex flex-col justify-center gap-4">
+              <UploadZone onFile={chooseFile} onReject={setError} />
+              {error && (
+                <p role="alert" className="bg-surface text-alert text-sm font-medium px-4 py-3">
+                  {error}
+                </p>
+              )}
+            </div>
           </section>
         ) : (
-          <div className="grid lg:grid-cols-[minmax(0,7fr)_minmax(0,5fr)] gap-6 items-start">
-            {/* Левая колонка: видео и таймлайн */}
-            <section className="lg:sticky lg:top-4">
-              <div className="panel p-3">
+          <>
+            {done && job && <Verdict job={job} onExport={exportJson} />}
+
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 sm:py-8 grid lg:grid-cols-[minmax(0,7fr)_minmax(0,5fr)] gap-6 items-start">
+              {/* Левая колонка: видео и таймлайн-поле */}
+              <section className="lg:sticky lg:top-4">
                 <video
                   ref={videoRef}
                   src={videoUrl}
                   controls
                   playsInline
-                  className="w-full rounded-md bg-ink aspect-video"
+                  className="w-full bg-ink aspect-video"
                   onLoadedMetadata={(e) => setDuration(e.currentTarget.duration || 0)}
                   onTimeUpdate={(e) => setCurrent(e.currentTarget.currentTime)}
                 />
@@ -617,14 +706,14 @@ export default function HomePage() {
                   onSelect={selectFinding}
                   onSeek={seek}
                 />
-                <div className="flex items-center justify-between gap-3 mt-3 flex-wrap">
+                <div className="flex items-center justify-between gap-3 mt-5 pt-4 border-t-2 border-ink flex-wrap">
                   <div className="min-w-0">
                     <p className="font-medium truncate">{file.name}</p>
                     <p className="text-xs text-muted tnum">
                       {(file.size / 1024 / 1024).toFixed(1)} МБ{duration ? ` · ${formatTime(duration)}` : ""}
                     </p>
                   </div>
-                  <div className="flex gap-2">
+                  <div className="flex gap-2 flex-wrap">
                     <label className="btn-ghost text-sm cursor-pointer">
                       Другое видео
                       <input
@@ -645,42 +734,47 @@ export default function HomePage() {
                     </button>
                   </div>
                 </div>
-              </div>
-            </section>
+              </section>
 
-            {/* Правая колонка: статус, вердикт, находки */}
-            <section className="space-y-4" aria-live="polite">
-              {error && (
-                <div className="panel p-4 border-alert/40">
-                  <p className="font-semibold text-alert">Анализ не выполнен</p>
-                  <p className="text-sm mt-1">{error}</p>
-                </div>
-              )}
+              {/* Правая колонка: статус и находки */}
+              <section className="space-y-4" aria-live="polite">
+                {error && (
+                  <div className="panel p-5 border-alert">
+                    <p className="font-semibold text-alert">Анализ не выполнен</p>
+                    <p className="text-sm mt-1">{error}</p>
+                  </div>
+                )}
 
-              {!job && !error && !busy && (
-                <div className="panel p-5">
-                  <p className="font-semibold">Видео готово к проверке</p>
-                  <p className="text-sm text-muted mt-1">
-                    Нажмите «Начать анализ». Результат появится здесь, а найденные моменты — отметками на таймлайне под
-                    видео.
-                  </p>
-                </div>
-              )}
+                {!job && !error && !busy && (
+                  <div className="panel p-5 sm:p-6">
+                    <p className="kicker text-wheat-ink">Готово к проверке</p>
+                    <p className="font-display font-semibold text-[28px] leading-[1.05] mt-2">Видео готово к проверке</p>
+                    <p className="text-sm text-muted mt-2">
+                      Нажмите «Начать анализ». Результат появится здесь, а найденные моменты — отметками на таймлайне под
+                      видео.
+                    </p>
+                  </div>
+                )}
 
-              {busy && <ProcessingPanel job={job} elapsed={elapsed} />}
+                {busy && <ProcessingPanel job={job} elapsed={elapsed} />}
 
-              {job?.status === "failed" && (
-                <div className="panel p-5 border-alert/40">
-                  <p className="font-semibold text-alert">Не удалось обработать видео</p>
-                  <p className="text-sm mt-1 break-words">{job.error || "Неизвестная ошибка сервера."}</p>
-                  <p className="text-sm text-muted mt-2">Проверьте статус модели в шапке и запустите анализ снова.</p>
-                </div>
-              )}
+                {job?.status === "failed" && (
+                  <div className="panel p-5 border-alert">
+                    <p className="font-semibold text-alert">Не удалось обработать видео</p>
+                    <p className="text-sm mt-1 break-words">{job.error || "Неизвестная ошибка сервера."}</p>
+                    <p className="text-sm text-muted mt-2">Проверьте статус модели в шапке и запустите анализ снова.</p>
+                  </div>
+                )}
 
-              {done && job && (
-                <>
-                  <Verdict job={job} onExport={exportJson} />
-                  {violations.map((v, i) => (
+                {done && job && !violations.length && (
+                  <div className="panel p-5 sm:p-6">
+                    <p className="font-display italic font-semibold text-[26px] leading-tight">Поле чистое: флажков нет.</p>
+                  </div>
+                )}
+
+                {done &&
+                  job &&
+                  violations.map((v, i) => (
                     <FindingCard
                       key={i}
                       v={v}
@@ -693,15 +787,19 @@ export default function HomePage() {
                       onOpenFrame={setModalFrame}
                     />
                   ))}
-                </>
-              )}
-            </section>
-          </div>
+              </section>
+            </div>
+          </>
         )}
       </main>
 
-      <footer className="text-xs text-muted text-center py-5">
-        CashGuard · ForteBank Datathon 26 · Qwen2.5-VL-7B-Instruct + LoRA, работает локально
+      <footer className="border-t-2 border-ink text-xs text-muted py-5">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 flex flex-wrap justify-between gap-2">
+          <span>
+            <span className="text-forte font-semibold">ForteBank</span> × <span className="italic font-semibold text-ink">Фермеры</span>
+          </span>
+          <span>CashGuard · ForteBank Datathon 26 · Qwen2.5-VL-7B-Instruct + LoRA, работает локально</span>
+        </div>
       </footer>
     </div>
   );

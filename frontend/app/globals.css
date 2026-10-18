@@ -1,18 +1,33 @@
 @import "tailwindcss";
 
+/* ForteBank × Фермеры — коллаб-дроп 01 */
 @theme {
-  --color-vault: #EEF0F3;      /* фон */
-  --color-surface: #FFFFFF;    /* панели */
-  --color-ink: #1C2230;        /* основной текст */
-  --color-muted: #5B6475;      /* второстепенный текст */
-  --color-line: #D5D9E0;       /* границы */
-  --color-forte: #951B4C;      /* бренд ForteBank, действия, метки нарушений */
-  --color-forte-dark: #761339;
-  --color-forte-soft: #F6E8EE;
-  --color-clear: #1F7A5A;      /* вердикт «нарушение не обнаружено» */
-  --color-clear-soft: #E4F2EC;
+  --color-vault: #F4ECDD;        /* фон: тёплое льняное полотно */
+  --color-surface: #FBF6EC;      /* панели */
+  --color-ink: #1E1A17;          /* основной текст */
+  --color-muted: #5A5047;        /* второстепенный текст (AA на vault и surface) */
+  --color-line: #D8CBB0;         /* границы */
+
+  --color-forte: #951B4C;        /* бренд ForteBank, нарушения */
+  --color-forte-dark: #6E1238;
+  --color-forte-deep: #5C0E2E;
+  --color-forte-soft: #F1DDE4;
+  --color-forte-flag: #A9446D;   /* неактивный флажок */
+
+  --color-wheat: #D9BC72;        /* Фермеры: пшеница */
+  --color-wheat-deep: #C9A24A;
+  --color-wheat-light: #F3D9A4;
+  --color-wheat-ink: #5A410E;    /* текст на пшенице */
+
+  --color-field: #22332B;        /* основные кнопки: глубокий зелёный */
+  --color-field-hover: #33483D;
+
+  --color-clear: #1F6B4E;        /* вердикт «нарушение не обнаружено» */
+  --color-clear-soft: #E1EEE6;
   --color-alert: #B4233C;
-  --font-sans: "IBM Plex Sans", "Segoe UI", system-ui, -apple-system, sans-serif;
+
+  --font-sans: "Golos Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-display: "Cormorant Garamond", Georgia, "Times New Roman", serif;
 }
 
 html {
@@ -34,28 +49,45 @@ body {
 :focus-visible {
   outline: 2px solid var(--color-forte);
   outline-offset: 2px;
-  border-radius: 4px;
+}
+.on-dark :focus-visible {
+  outline-color: var(--color-wheat-light);
+}
+
+.kicker {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+}
+
+/* Фактура пшеничного поля */
+.tex-wheat {
+  background-color: var(--color-wheat);
+  background-image: repeating-linear-gradient(172deg, var(--color-wheat-deep) 0 3px, transparent 3px 12px);
+}
+.tex-wheat-fine {
+  background-color: var(--color-wheat);
+  background-image: repeating-linear-gradient(172deg, rgb(122 90 18 / 0.22) 0 2px, transparent 2px 8px);
 }
 
 .panel {
   background: var(--color-surface);
   border: 1px solid var(--color-line);
-  border-radius: 10px;
 }
 
 .btn-primary {
   display: inline-flex;
   align-items: center;
-  gap: 0.5rem;
-  background: var(--color-forte);
+  gap: 0.6rem;
+  background: var(--color-field);
   color: #fff;
   font-weight: 600;
-  padding: 0.65rem 1.25rem;
-  border-radius: 8px;
+  padding: 0.75rem 1.35rem;
   transition: background-color 0.15s ease;
 }
 .btn-primary:hover:not(:disabled) {
-  background: var(--color-forte-dark);
+  background: var(--color-field-hover);
 }
 .btn-primary:disabled {
   opacity: 0.45;
@@ -68,93 +100,138 @@ body {
   gap: 0.4rem;
   color: var(--color-ink);
   font-weight: 500;
-  padding: 0.45rem 0.8rem;
-  border-radius: 8px;
-  border: 1px solid var(--color-line);
-  background: var(--color-surface);
-  transition: border-color 0.15s ease;
+  padding: 0.5rem 0.85rem;
+  border: 1px solid var(--color-ink);
+  background: transparent;
+  transition: background-color 0.15s ease;
 }
 .btn-ghost:hover {
-  border-color: var(--color-muted);
+  background: var(--color-surface);
 }
 
+.btn-on-dark {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  color: #fff;
+  font-weight: 600;
+  padding: 0.75rem 1.2rem;
+  border: 1px solid #fff;
+  background: transparent;
+  transition: background-color 0.15s ease;
+}
+.btn-on-dark:hover {
+  background: rgb(0 0 0 / 0.18);
+}
+
+/* Карточка загрузки на пшеничном поле */
 .dropzone {
-  border: 1.5px dashed var(--color-line);
-  border-radius: 10px;
   background: var(--color-surface);
-  transition: border-color 0.15s ease, background-color 0.15s ease;
+  box-shadow: 0 10px 30px rgb(74 42 10 / 0.25);
+  outline: 2px solid transparent;
+  outline-offset: -2px;
+  transition: outline-color 0.15s ease;
 }
 .dropzone:hover,
 .dropzone-active {
-  border-color: var(--color-forte);
-  background: var(--color-forte-soft);
+  outline-color: var(--color-forte);
 }
 
-/* ─── Таймлайн доказательств ─────────────────────────────────────────── */
-.timeline {
+/* ─── Таймлайн-поле ──────────────────────────────────────────────────── */
+.field {
   position: relative;
-  height: 44px;
-  border-radius: 6px;
-  background:
-    repeating-linear-gradient(90deg, transparent 0 calc(10% - 1px), var(--color-line) calc(10% - 1px) 10%),
-    #F7F8FA;
-  border: 1px solid var(--color-line);
+  height: 96px;
   cursor: pointer;
+  background: repeating-linear-gradient(176deg, #E3CB8A 0 7px, var(--color-wheat-deep) 7px 10px);
 }
-.timeline-range {
+@media (min-width: 640px) {
+  .field { height: 128px; }
+}
+.field-played {
   position: absolute;
-  top: 8px;
-  bottom: 8px;
-  background: color-mix(in srgb, var(--color-forte) 22%, transparent);
-  border-radius: 3px;
+  inset: 0 auto 0 0;
+  background: repeating-linear-gradient(176deg, #6E2C3C 0 7px, #4A1C27 7px 10px);
   pointer-events: none;
 }
-.timeline-mark {
+.field-range {
   position: absolute;
-  top: 2px;
-  bottom: 2px;
-  width: 4px;
-  margin-left: -2px;
-  background: var(--color-forte);
-  border-radius: 2px;
+  top: 0;
+  bottom: 0;
+  background: rgb(149 27 76 / 0.35);
+  pointer-events: none;
 }
-.timeline-mark::after {
-  content: "";
-  position: absolute;
-  inset: -2px -8px;
-}
-.timeline-mark[data-active="true"] {
-  width: 6px;
-  margin-left: -3px;
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-forte) 30%, transparent);
-}
-.timeline-playhead {
+.field-playhead {
   position: absolute;
   top: -4px;
   bottom: -4px;
+  width: 3px;
+  margin-left: -1px;
+  background: var(--color-surface);
+  box-shadow: 0 0 0 1px var(--color-ink);
+  pointer-events: none;
+}
+.flag-pole {
+  position: absolute;
+  top: 4px;
+  bottom: 14px;
   width: 2px;
   margin-left: -1px;
   background: var(--color-ink);
   pointer-events: none;
 }
+.flag {
+  position: absolute;
+  top: 2px;
+  width: 40px;
+  height: 28px;
+  padding: 2px 0 0 0;
+}
+.flag[data-flip="true"] {
+  margin-left: -40px;
+}
+.flag-cloth {
+  display: flex;
+  align-items: center;
+  height: 22px;
+  width: 36px;
+  padding-left: 6px;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  background: var(--color-forte-flag);
+  clip-path: polygon(0 0, 100% 0, 80% 50%, 100% 100%, 0 100%);
+  transition: background-color 0.15s ease;
+}
+.flag[data-flip="true"] .flag-cloth {
+  margin-left: 4px;
+  padding-left: 12px;
+  clip-path: polygon(0 0, 100% 0, 100% 100%, 0 100%, 20% 50%);
+}
+.flag:hover .flag-cloth,
+.flag[data-active="true"] .flag-cloth {
+  background: var(--color-forte);
+}
 
 .finding {
-  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  transition: outline-color 0.2s ease;
+  outline: 2px solid transparent;
+  outline-offset: -1px;
 }
 .finding[data-active="true"] {
-  border-color: var(--color-forte);
-  box-shadow: 0 0 0 3px var(--color-forte-soft);
+  outline-color: var(--color-forte);
 }
 
+/* ─── Прогресс анализа: поле вспахивается ────────────────────────────── */
 .progress-track {
-  height: 6px;
-  border-radius: 3px;
-  background: var(--color-vault);
+  position: relative;
+  height: 56px;
   overflow: hidden;
+  background: repeating-linear-gradient(180deg, #E3CB8A 0 6px, var(--color-wheat-deep) 6px 9px);
 }
 .progress-bar {
   height: 100%;
-  background: var(--color-forte);
+  background: repeating-linear-gradient(180deg, #6E2C3C 0 6px, #4A1C27 6px 9px);
+  box-shadow: 3px 0 0 var(--color-ink);
   transition: width 0.4s ease;
 }
 .progress-indeterminate {
