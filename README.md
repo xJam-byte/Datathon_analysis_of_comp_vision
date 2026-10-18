@@ -12,7 +12,7 @@
 
 | | |
 |---|---|
-| Интерфейс | `https://<POD_ID>-3000.proxy.runpod.net` |
+| Интерфейс | `https://<POD_ID>-3000.proxy.runpod.net/cashguard` |
 | API | `https://<POD_ID>-8080.proxy.runpod.net/api/v1/...` |
 | Ключ API | передаётся жюри отдельно (заголовок `X-API-Key`) |
 
