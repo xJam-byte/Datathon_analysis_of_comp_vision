@@ -19,14 +19,15 @@ services:
     volumes:
       - vlm-cache:/root/.cache/huggingface
       - ./ml:/app/ml:ro
-    # MODEL_PATH: /app/ml/merged_model (дообученная, см. ml/merge_lora.yaml) или Qwen/Qwen2.5-VL-7B-Instruct
+    # MODEL_PATH: Qwen/Qwen2.5-VL-32B-Instruct-AWQ (по умолчанию, VLM_DTYPE=float16)
+    #             или /app/ml/merged_model (наша дообученная 7B, VLM_DTYPE=bfloat16, PROMPT_MODE=finetuned)
     command:
       - --model
-      - ${MODEL_PATH:-/app/ml/merged_model}
+      - ${MODEL_PATH:-Qwen/Qwen2.5-VL-32B-Instruct-AWQ}
       - --served-model-name
       - Qwen2.5-VL-7B-Instruct
       - --dtype
-      - bfloat16
+      - ${VLM_DTYPE:-float16}
       - --max-model-len
       - "8192"
       - --max-num-seqs
@@ -102,7 +103,7 @@ services:
     environment:
       - VLM_BASE_URL=http://vlm:8000/v1
       - API_KEY=${API_KEY:?задайте API_KEY}
-      - PROMPT_MODE=${PROMPT_MODE:-finetuned}
+      - PROMPT_MODE=${PROMPT_MODE:-qa}
       - CORS_ORIGINS=*
     ports:
       - "8080:8080"

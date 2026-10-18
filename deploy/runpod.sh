@@ -10,21 +10,21 @@
 #
 # Переменные:
 #   API_KEY      — ключ для жюри (ОБЯЗАТЕЛЬНО свой, не дефолтный из репо)
-#   MODEL        — путь к модели (по умолчанию ml/merged_model, если есть,
-#                  иначе базовая Qwen/Qwen2.5-VL-7B-Instruct)
-#   PROMPT_MODE  — finetuned (дообученная) | rules (базовая); выбирается сам
+#   MODEL        — модель для vLLM (по умолчанию Qwen/Qwen2.5-VL-32B-Instruct-AWQ;
+#                  ml/merged_model — наша дообученная 7B, см. README)
+#   PROMPT_MODE  — qa (по умолчанию) | finetuned (для ml/merged_model) | rules
 # ═══════════════════════════════════════════════════════════════════════
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LOGS="$ROOT/deploy/logs"; mkdir -p "$LOGS"
 cd "$ROOT"
 
-if [[ -z "${MODEL:-}" ]]; then
-  if [[ -f ml/merged_model/config.json ]]; then MODEL="$ROOT/ml/merged_model"; else MODEL="Qwen/Qwen2.5-VL-7B-Instruct"; fi
-fi
+MODEL="${MODEL:-Qwen/Qwen2.5-VL-32B-Instruct-AWQ}"
 if [[ -z "${PROMPT_MODE:-}" ]]; then
-  if [[ "$MODEL" == Qwen/* ]]; then PROMPT_MODE=rules; else PROMPT_MODE=finetuned; fi
+  if [[ "$MODEL" == */merged_model ]]; then PROMPT_MODE=finetuned; else PROMPT_MODE=qa; fi
 fi
+# AWQ-веса работают только в fp16
+if [[ "$MODEL" == *AWQ* ]]; then DTYPE=float16; else DTYPE=bfloat16; fi
 
 setup() {
   pip install -q --upgrade pip
@@ -56,10 +56,10 @@ start() {
   nohup vllm serve "$MODEL" \
     --served-model-name Qwen2.5-VL-7B-Instruct \
     --host 0.0.0.0 --port 8000 \
-    --dtype bfloat16 \
+    --dtype "$DTYPE" \
     --max-model-len 8192 \
-    --max-num-seqs 8 \
-    --gpu-memory-utilization 0.90 \
+    --max-num-seqs 16 \
+    --gpu-memory-utilization 0.92 \
     --limit-mm-per-prompt '{"image": 10}' \
     --trust-remote-code > "$LOGS/vlm.log" 2>&1 &
   wait_http http://localhost:8000/v1/models vLLM 900

@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 // ─── Типы (схема API, раздел 10 ТЗ + доп. поля бэкенда) ─────────────────
 
@@ -504,7 +504,6 @@ export default function HomePage() {
   const [apiKey, setApiKey] = useState(DEFAULT_KEY);
   const [health, setHealth] = useState<Health>({ status: "unknown" });
   const [file, setFile] = useState<File | null>(null);
-  const [videoUrl, setVideoUrl] = useState("");
   const [duration, setDuration] = useState(0);
   const [current, setCurrent] = useState(0);
   const [busy, setBusy] = useState(false);
@@ -525,6 +524,7 @@ export default function HomePage() {
   useEffect(() => {
     try {
       const saved = localStorage.getItem("cashguard_api_key");
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- localStorage доступен только на клиенте
       if (saved) setApiKey(saved);
     } catch { }
     return stopTimers;
@@ -545,12 +545,8 @@ export default function HomePage() {
     return () => clearInterval(id);
   }, []);
 
-  useEffect(() => {
-    if (!file) return;
-    const u = URL.createObjectURL(file);
-    setVideoUrl(u);
-    return () => URL.revokeObjectURL(u);
-  }, [file]);
+  const videoUrl = useMemo(() => (file ? URL.createObjectURL(file) : ""), [file]);
+  useEffect(() => () => { if (videoUrl) URL.revokeObjectURL(videoUrl); }, [videoUrl]);
 
   const reset = () => {
     stopTimers();
@@ -798,7 +794,7 @@ export default function HomePage() {
           <span>
             <span className="text-forte font-semibold">ForteBank</span> × <span className="italic font-semibold text-ink">Фермеры</span>
           </span>
-          <span>CashGuard · ForteBank Datathon 26 · Qwen2.5-VL-7B-Instruct + LoRA, работает локально</span>
+          <span>CashGuard · ForteBank Datathon 26 · Qwen2.5-VL-32B-Instruct (AWQ), работает локально</span>
         </div>
       </footer>
     </div>
